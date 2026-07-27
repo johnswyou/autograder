@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-autograder"
+version = "0.1.0"
+description = "Agentic autograder for physics/math assignments (PDF, images, markdown, LaTeX) using the Anthropic API"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    # 0.77.0 is the first release whose messages.stream() accepts
+    # output_config, which --effort requires; 0.76 and earlier raise TypeError.
+    # Verified by tests/test_llm_models.py, which checks the installed SDK
+    # against the parameters the agent loop actually sends.
+    "anthropic>=0.77",
+    # 1.24.3 renamed the import from `fitz` to `pymupdf`; 1.24.0-1.24.2 fail at
+    # import time.
+    "pymupdf>=1.24.3",
+    "pillow>=10",
+    "pydantic>=2.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/johnswyou/autograder"
+Repository = "https://github.com/johnswyou/autograder"
+Documentation = "https://github.com/johnswyou/autograder/blob/main/docs/usage.md"
+Issues = "https://github.com/johnswyou/autograder/issues"
+
+[project.scripts]
+autograder = "autograder.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["autograder*"]
+
+[tool.ruff]
+# The code is written to roughly this width already; 88 would flag hundreds of
+# lines that read better long than wrapped.
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# Ruff's implicit default varies between releases, so the set is pinned here.
+#   E/W/F  pycodestyle + pyflakes: the baseline every Python project wants
+#   I      import order (auto-fixable, keeps diffs from churning on imports)
+#   UP     the floor is Python 3.10, so `X | None` and `dict[...]` are available
+#   B      bugbear; catches real defects such as `zip()` without `strict=`
+#   C4/SIM comprehension and control-flow simplifications
+#
+# Deliberately NOT selected:
+#   BLE  every `except Exception` in this codebase is load-bearing. Per-item
+#        failures must degrade into an ArtifactFailure rather than abort a paid
+#        run, which is exactly the pattern BLE001 exists to discourage.
+#   TRY  TRY004 wants TypeError for invalid types, but RunConfig's checks reject
+#        out-of-range *values*, for which ValueError is correct.
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM"]
+
+[tool.ruff.lint.isort]
+# The codebase packs several names per line inside `from x import (...)`. Left
+# at the default, a trailing comma would force one name per line and rewrite
+# every grouped import in the repo for no readability gain.
+split-on-trailing-comma = false
+
+[tool.mypy]
+python_version = "3.10"
+# Without this plugin mypy does not understand that `Field(...)` supplies a
+# default, so it reports a "missing named argument" for every optional field on
+# every model construction. The plugin models the synthesized __init__ instead.
+plugins = ["pydantic.mypy"]

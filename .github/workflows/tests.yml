@@ -1,0 +1,64 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    # Both tools are pinned so a new release cannot turn an unrelated PR red.
+    # Their rule sets live in pyproject.toml; raise the pins deliberately.
+    name: lint and type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install
+        run: pip install -e . "ruff==0.16.0" "mypy==2.3.0"
+      - name: Ruff
+        run: ruff check autograder/ scripts/ tests/
+      - name: Mypy
+        run: mypy autograder/ scripts/
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: pip install -e . pytest
+      - name: Run offline test suite
+        run: python -m pytest tests/ -q
+
+  minimum-dependencies:
+    # The `test` job resolves every dependency to its newest release, so the
+    # floors declared in pyproject.toml are never otherwise exercised. This job
+    # installs the lowest version each floor permits, which is what a user with
+    # a constrained resolver gets. A failure means a floor is too low to run the
+    # code: raise it in pyproject.toml rather than relaxing this job.
+    name: minimum declared dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install uv
+        run: pip install uv
+      - name: Install the lowest permitted version of each dependency
+        run: |
+          uv pip install --system --resolution lowest-direct -e .
+          uv pip install --system pytest
+      - name: Show resolved versions
+        run: uv pip list --system
+      - name: Run offline test suite
+        run: python -m pytest tests/ -q

@@ -1,0 +1,26 @@
+# Real student work and grading output. These contain student names and
+# graded submissions -- never commit them.
+GRADING/
+examples/sample/
+
+# Python build artifacts
+__pycache__/
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Tooling caches and coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.json
+
+# Local editor / agent configuration
+.claude/
+.worktrees/
