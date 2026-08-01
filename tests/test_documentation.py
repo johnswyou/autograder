@@ -104,25 +104,84 @@ def _reference_text() -> str:
     return (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
 
 
-def _cli_reference_contract():
-    rows = _marked_table(_reference_text(), "cli-options")
-    parser = build_parser()
-    subparsers = next(
+def _subparser_action(parser: argparse.ArgumentParser) -> argparse._SubParsersAction:
+    return next(
         action
         for action in parser._actions
         if isinstance(action, argparse._SubParsersAction)
     )
-    return rows, subparsers, set(subparsers.choices)
 
 
 def _commands_for_cli_row(
     row: dict[str, str],
-    commands: set[str],
+    subcommands: set[str],
 ) -> set[str]:
     scopes = _code_value(row["Commands"])
-    row_commands = commands if scopes == "all" else set(scopes.split(", "))
-    assert row_commands <= commands, f"unknown documented command scope: {scopes}"
-    return row_commands
+    row_scopes = subcommands if scopes == "all" else set(scopes.split(", "))
+    known_scopes = {"root", *subcommands}
+    assert row_scopes <= known_scopes, f"unknown documented command scope: {scopes}"
+    return row_scopes
+
+
+def _parser_cli_action_contracts(
+    parser: argparse.ArgumentParser,
+) -> list[tuple[str, tuple[str, ...], str, str]]:
+    subparsers = _subparser_action(parser)
+    scoped_parsers = {"root": parser, **subparsers.choices}
+    contracts = []
+    for scope, scoped_parser in scoped_parsers.items():
+        for action in scoped_parser._actions:
+            # argparse adds one of these to the root and every subparser. It is
+            # framework help, not a public option maintained by this project.
+            if isinstance(action, argparse._HelpAction):
+                continue
+            if not action.option_strings:
+                continue
+            contracts.append(
+                (
+                    scope,
+                    tuple(action.option_strings),
+                    action.dest,
+                    _contract_default(action.default, required=action.required),
+                )
+            )
+    return contracts
+
+
+def _documented_cli_action_contracts(
+    rows: list[dict[str, str]],
+    subcommands: set[str],
+) -> list[tuple[str, tuple[str, ...], str, str]]:
+    contracts = []
+    for row in rows:
+        options = tuple(re.findall(r"`(-{1,2}[^`]+)`", row["Options"]))
+        assert options, f"CLI row has no option aliases: {row}"
+        destination = _code_value(row["Destination"])
+        default = _code_value(row["Parser default"])
+        contracts.extend(
+            (scope, options, destination, default)
+            for scope in _commands_for_cli_row(row, subcommands)
+        )
+    return contracts
+
+
+def _assert_cli_option_contract(
+    rows: list[dict[str, str]],
+    parser: argparse.ArgumentParser,
+) -> None:
+    subcommands = set(_subparser_action(parser).choices)
+    documented = _documented_cli_action_contracts(rows, subcommands)
+    duplicates = sorted(
+        {contract for contract in documented if documented.count(contract) > 1}
+    )
+    assert not duplicates, f"duplicate canonical CLI action row(s): {duplicates}"
+
+    actual = _parser_cli_action_contracts(parser)
+    assert set(documented) == set(actual), (
+        "CLI action contract drift; missing parser actions: "
+        f"{sorted(set(actual) - set(documented))}; stale documented actions: "
+        f"{sorted(set(documented) - set(actual))}"
+    )
 
 
 def _runconfig_reference_rows() -> list[dict[str, str]]:
@@ -131,6 +190,23 @@ def _runconfig_reference_rows() -> list[dict[str, str]]:
         *_marked_table(reference, "runconfig-public"),
         *_marked_table(reference, "runconfig-advanced"),
     ]
+
+
+def _assert_runconfig_field_contract(rows: list[dict[str, str]]) -> None:
+    names = [_code_value(row["Field"]) for row in rows]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    assert not duplicates, f"duplicate RunConfig field row(s): {duplicates}"
+
+    documented = {
+        name: _code_value(row["Default"]) for name, row in zip(names, rows, strict=True)
+    }
+    actual = {
+        field.name: _contract_default(field.default) for field in fields(RunConfig)
+    }
+    assert documented == actual, (
+        "RunConfig reference drift; a field is missing, stale, or has a changed default: "
+        f"expected {actual}, documented {documented}"
+    )
 
 
 def _heading_anchors(text: str) -> set[str]:
@@ -213,71 +289,51 @@ def test_required_documentation_set_exists() -> None:
     assert not missing, f"missing maintained documentation: {', '.join(missing)}"
 
 
-def test_reference_cli_option_table_catches_parser_option_and_scope_drift() -> None:
-    rows, subparsers, commands = _cli_reference_contract()
-    actual = {
-        (command, option)
-        for command, command_parser in subparsers.choices.items()
-        for action in command_parser._actions
-        if not isinstance(action, argparse._HelpAction)
-        for option in action.option_strings
-    }
+def test_cli_contract_detects_aliases_rebound_to_the_wrong_destination() -> None:
+    rows = [dict(row) for row in _marked_table(_reference_text(), "cli-options")]
+    assignment = next(row for row in rows if row["Destination"] == "`assignment`")
+    output = next(row for row in rows if row["Destination"] == "`out`")
+    assignment["Options"], output["Options"] = output["Options"], assignment["Options"]
 
-    documented: set[tuple[str, str]] = set()
-    for row in rows:
-        row_commands = _commands_for_cli_row(row, commands)
-        options = re.findall(r"`(-{1,2}[^`]+)`", row["Options"])
-        assert options, f"CLI row has no option aliases: {row}"
-        documented.update(
-            (command, option) for command in row_commands for option in options
-        )
-
-    assert documented == actual, (
-        "CLI reference drift; missing parser options/scopes: "
-        f"{sorted(actual - documented)}; stale options/scopes: "
-        f"{sorted(documented - actual)}"
-    )
+    with pytest.raises(AssertionError, match="CLI action contract drift"):
+        _assert_cli_option_contract(rows, build_parser())
 
 
-def test_reference_cli_option_table_catches_parser_default_drift() -> None:
-    rows, subparsers, commands = _cli_reference_contract()
-    actual = {
-        (command, action.dest): _contract_default(
-            action.default,
-            required=action.required,
-        )
-        for command, command_parser in subparsers.choices.items()
-        for action in command_parser._actions
-        if not isinstance(action, argparse._HelpAction)
-    }
+def test_cli_contract_rejects_a_duplicate_canonical_action_row() -> None:
+    rows = [dict(row) for row in _marked_table(_reference_text(), "cli-options")]
+    rows.append(dict(rows[0]))
 
-    documented: dict[tuple[str, str], str] = {}
-    for row in rows:
-        row_commands = _commands_for_cli_row(row, commands)
-        destination = _code_value(row["Destination"])
-        default = _code_value(row["Parser default"])
-        for command in row_commands:
-            documented[(command, destination)] = default
+    with pytest.raises(AssertionError, match="duplicate canonical CLI action"):
+        _assert_cli_option_contract(rows, build_parser())
 
-    assert documented == actual, (
-        "CLI parser-default drift; update only the structured default cells: "
-        f"expected {actual}, documented {documented}"
-    )
+
+def test_cli_contract_catches_an_undocumented_root_option() -> None:
+    parser = build_parser()
+    parser.add_argument("--version", action="version", version="test-version")
+    rows = _marked_table(_reference_text(), "cli-options")
+
+    with pytest.raises(AssertionError, match="CLI action contract drift"):
+        _assert_cli_option_contract(rows, parser)
+
+
+def test_runconfig_contract_rejects_a_duplicate_canonical_field_row() -> None:
+    rows = [dict(row) for row in _runconfig_reference_rows()]
+    rows.append(dict(rows[0]))
+
+    with pytest.raises(AssertionError, match="duplicate RunConfig field"):
+        _assert_runconfig_field_contract(rows)
+
+
+def test_reference_cli_option_table_catches_complete_parser_action_drift() -> None:
+    rows = _marked_table(_reference_text(), "cli-options")
+
+    _assert_cli_option_contract(rows, build_parser())
 
 
 def test_reference_runconfig_tables_catch_field_and_default_drift() -> None:
     rows = _runconfig_reference_rows()
-    documented = {
-        _code_value(row["Field"]): _code_value(row["Default"]) for row in rows
-    }
-    actual = {
-        field.name: _contract_default(field.default) for field in fields(RunConfig)
-    }
 
-    assert documented == actual, (
-        "RunConfig reference drift; a field is missing, stale, or has a changed default: "
-        f"expected {actual}, documented {documented}"
-    )
+    _assert_runconfig_field_contract(rows)
 
 
 def test_reference_runconfig_tables_catch_cache_binding_drift() -> None:

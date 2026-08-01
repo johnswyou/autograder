@@ -17,12 +17,12 @@ autograder rubric  --assignment PATH --out DIR [shared options] [solution option
 autograder grade   --assignment PATH --submissions PATH [PATH ...] --out DIR [shared options] [solution options] [rubric options] [grading options]
 ```
 
-| Command | Last stage requested | Required command-specific input | Return value when embedded |
+| Command | Last stage requested | Required command-specific input | Embedded outcome |
 |---|---|---|---|
 | `inspect` | Assignment analysis | None beyond the shared assignment and output paths | `AssignmentSpec` |
 | `solve` | Solution generation or checking | None; `--solutions` is optional | `SolutionsManual` |
 | `rubric` | Rubric generation or checking | None; solution and rubric inputs are optional | `Rubric` |
-| `grade` | Submission mapping, transcription, and grading | One or more `--submissions` paths | `list[StudentGrade]`, or `PartialGradeFailure` containing available grades and failures |
+| `grade` | Submission mapping, transcription, and grading | One or more `--submissions` paths | Returns `list[StudentGrade]` when complete; after writing partial outputs, raises `PartialGradeFailure` whose `grades` and `failures` attributes expose available results |
 
 Each later command includes every earlier stage. For example, `grade` creates
 the assignment spec, solutions, and rubric when compatible saved artifacts do
@@ -33,8 +33,10 @@ the public option inventory.
 ## CLI option inventory
 
 `Parser default` is the value produced by `build_parser()` before conversion to
-`RunConfig`; `null` means omitted. The command scopes and default cells in this
-table are checked against the live parser.
+`RunConfig`; `null` means omitted. `all` means all four subcommands, while
+`root` is reserved for root-parser options. There are currently no public root
+options. Complete scope/alias/destination/default rows are checked against the
+live parser; automatic `argparse` help actions are explicitly excluded.
 
 <!-- cli-options:start -->
 | Commands | Options | Destination | Accepted value | Parser default | Effect and interaction |
@@ -137,10 +139,11 @@ Each `--submissions` argument is expanded independently, then combined:
 | Directory containing both direct files and immediate subdirectories | Both rules apply, so direct files and nonempty subdirectories all become students |
 
 Nested directories below the immediate student directory are not traversed.
-Empty student directories and unsupported files are ignored. A directory that
-yields no students causes an error. Within a multi-file student submission,
-files are concatenated in natural order and the ordered names and contents bind
-the run.
+Empty directories and unsupported files are ignored. Discovery raises an error
+only when the combined result across all supplied `--submissions` paths is
+empty; an empty directory is harmless when another argument yields a student.
+Within a multi-file student submission, files are concatenated in natural
+order and the ordered names and contents bind the run.
 
 Student IDs are converted to safe artifact directory slugs by replacing unsafe
 character runs with `_`, trimming leading dots, and using `student` if nothing
