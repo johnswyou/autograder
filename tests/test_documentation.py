@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from urllib.parse import unquote
 
+import pytest
+
 from autograder import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,10 +81,39 @@ def _local_link_targets(text: str) -> list[str]:
     return targets
 
 
+def _resolve_local_link(path: Path, file_part: str) -> Path:
+    target_path = Path(file_part)
+    assert not target_path.is_absolute(), (
+        f"{path.relative_to(ROOT)} must use a relative local link: {file_part}"
+    )
+
+    linked_path = (path.parent / target_path).resolve()
+    assert linked_path.is_relative_to(ROOT), (
+        f"{path.relative_to(ROOT)} links outside the repository: {file_part}"
+    )
+    return linked_path
+
+
 def test_local_link_parser_includes_line_start_links_and_excludes_images() -> None:
     targets = _local_link_targets("[Guide](reference.md)\n![Diagram](diagram.png)")
 
     assert targets == ["reference.md"]
+
+
+def test_local_link_paths_must_be_relative() -> None:
+    with pytest.raises(AssertionError, match="relative"):
+        _resolve_local_link(ROOT / "README.md", "/etc/passwd")
+
+
+def test_local_link_paths_must_stay_in_repository() -> None:
+    with pytest.raises(AssertionError, match="repository"):
+        _resolve_local_link(DOCUMENTATION_INDEX, "../../outside.md")
+
+
+def test_local_parent_link_can_resolve_within_repository() -> None:
+    linked_path = _resolve_local_link(DOCUMENTATION_INDEX, "../README.md")
+
+    assert linked_path == ROOT / "README.md"
 
 
 def test_required_documentation_set_exists() -> None:
@@ -137,7 +168,7 @@ def test_maintained_markdown_links_anchors_and_fences_are_valid() -> None:
                 continue
 
             file_part, separator, anchor = target.partition("#")
-            linked_path = (path.parent / file_part).resolve()
+            linked_path = _resolve_local_link(path, file_part)
             assert linked_path.is_file(), (
                 f"{path.relative_to(ROOT)} links to missing {file_part}"
             )
