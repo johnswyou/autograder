@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
+from dataclasses import fields
 from pathlib import Path
 from urllib.parse import unquote
 
 import pytest
 
 from autograder import __version__
+from autograder.cli import build_parser
+from autograder.config import RunConfig
+from autograder.models import Rubric
+from autograder.solutions import parse_provided_solutions
 
 ROOT = Path(__file__).resolve().parents[1]
 MAINTAINED_MARKDOWN = (
@@ -44,6 +51,53 @@ MERMAID_DECLARATIONS = (
     "xychart",
     "sankey-beta",
 )
+
+
+def _marked_block(text: str, name: str) -> str:
+    match = re.search(
+        rf"<!-- {re.escape(name)}:start -->\n(.*?)\n<!-- {re.escape(name)}:end -->",
+        text,
+        flags=re.DOTALL,
+    )
+    assert match is not None, f"reference is missing the {name!r} contract block"
+    return match.group(1)
+
+
+def _marked_table(text: str, name: str) -> list[dict[str, str]]:
+    lines = [line for line in _marked_block(text, name).splitlines() if line.startswith("|")]
+    assert len(lines) >= 2, f"{name!r} must contain a Markdown table"
+
+    def cells(line: str) -> list[str]:
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    headings = cells(lines[0])
+    assert all(re.fullmatch(r":?-+:?", cell) for cell in cells(lines[1]))
+    rows = [dict(zip(headings, cells(line), strict=True)) for line in lines[2:]]
+    assert rows, f"{name!r} must contain at least one data row"
+    return rows
+
+
+def _code_value(cell: str) -> str:
+    match = re.fullmatch(r"`([^`]+)`", cell)
+    assert match is not None, f"expected one code-formatted value, got {cell!r}"
+    return match.group(1)
+
+
+def _contract_default(value: object, *, required: bool = False) -> str:
+    if required:
+        return "required"
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
+
+
+def _marked_json(text: str, name: str) -> object:
+    block = _marked_block(text, name)
+    match = re.fullmatch(r"```json\n(.*)\n```", block, flags=re.DOTALL)
+    assert match is not None, f"{name!r} must contain exactly one JSON code fence"
+    return json.loads(match.group(1))
 
 
 def _heading_anchors(text: str) -> set[str]:
@@ -124,6 +178,128 @@ def test_required_documentation_set_exists() -> None:
     ]
 
     assert not missing, f"missing maintained documentation: {', '.join(missing)}"
+
+
+def test_reference_cli_option_table_catches_parser_option_and_scope_drift() -> None:
+    reference = (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
+    rows = _marked_table(reference, "cli-options")
+    parser = build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    commands = set(subparsers.choices)
+    actual = {
+        (command, option)
+        for command, command_parser in subparsers.choices.items()
+        for action in command_parser._actions
+        if not isinstance(action, argparse._HelpAction)
+        for option in action.option_strings
+    }
+
+    documented: set[tuple[str, str]] = set()
+    for row in rows:
+        scopes = _code_value(row["Commands"])
+        row_commands = commands if scopes == "all" else set(scopes.split(", "))
+        assert row_commands <= commands, f"unknown documented command scope: {scopes}"
+        options = re.findall(r"`(-{1,2}[^`]+)`", row["Options"])
+        assert options, f"CLI row has no option aliases: {row}"
+        documented.update(
+            (command, option) for command in row_commands for option in options
+        )
+
+    assert documented == actual, (
+        "CLI reference drift; missing parser options/scopes: "
+        f"{sorted(actual - documented)}; stale options/scopes: "
+        f"{sorted(documented - actual)}"
+    )
+
+
+def test_reference_cli_option_table_catches_parser_default_drift() -> None:
+    reference = (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
+    rows = _marked_table(reference, "cli-options")
+    parser = build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    commands = set(subparsers.choices)
+    actual = {
+        (command, action.dest): _contract_default(
+            action.default,
+            required=action.required,
+        )
+        for command, command_parser in subparsers.choices.items()
+        for action in command_parser._actions
+        if not isinstance(action, argparse._HelpAction)
+    }
+
+    documented: dict[tuple[str, str], str] = {}
+    for row in rows:
+        scopes = _code_value(row["Commands"])
+        row_commands = commands if scopes == "all" else set(scopes.split(", "))
+        destination = _code_value(row["Destination"])
+        default = _code_value(row["Parser default"])
+        for command in row_commands:
+            documented[(command, destination)] = default
+
+    assert documented == actual, (
+        "CLI parser-default drift; update only the structured default cells: "
+        f"expected {actual}, documented {documented}"
+    )
+
+
+def test_reference_runconfig_tables_catch_field_and_default_drift() -> None:
+    reference = (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
+    rows = [
+        *_marked_table(reference, "runconfig-public"),
+        *_marked_table(reference, "runconfig-advanced"),
+    ]
+    documented = {
+        _code_value(row["Field"]): _code_value(row["Default"]) for row in rows
+    }
+    actual = {
+        field.name: _contract_default(field.default) for field in fields(RunConfig)
+    }
+
+    assert documented == actual, (
+        "RunConfig reference drift; a field is missing, stale, or has a changed default: "
+        f"expected {actual}, documented {documented}"
+    )
+
+
+def test_reference_solution_json_example_matches_the_accepted_parser_shape(
+    tmp_path: Path,
+) -> None:
+    reference = (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
+    example = _marked_json(reference, "solution-json-example")
+    key_path = tmp_path / "solutions.json"
+    key_path.write_text(json.dumps(example), encoding="utf-8")
+
+    solutions, issues = parse_provided_solutions(
+        None,
+        RunConfig(),
+        None,
+        key_path,
+        None,
+        None,
+    )
+
+    assert issues == []
+    assert set(solutions) == {"1"}
+    assert solutions["1"].final_answer
+
+
+def test_reference_rubric_json_example_matches_the_pydantic_input_shape() -> None:
+    reference = (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
+    example = _marked_json(reference, "rubric-json-example")
+
+    rubric = Rubric.model_validate(example)
+
+    assert [problem.problem_id for problem in rubric.problems] == ["1"]
+    assert rubric.problems[0].criteria
 
 
 def test_documentation_index_routes_each_reader_path() -> None:

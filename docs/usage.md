@@ -2,8 +2,9 @@
 
 Use this guide when you understand the basic pipeline and need to make a real
 grading decision. If the stages are unfamiliar, read [How it works](how-it-works.md)
-first. For exact command syntax, accepted JSON shapes, defaults, and artifact
-fields, use the [Reference](reference.md).
+first. For [exact command syntax](reference.md#command-syntax),
+[accepted JSON shapes](reference.md#teacher-solution-json), defaults, and
+artifact fields, use the Reference.
 
 The autograder produces recommendations and review evidence. It does not
 release grades. You remain responsible for the final decision.
@@ -126,8 +127,9 @@ For a supplied document, content matching is model-assisted: a stale entry that
 answers a different quantity or uses different given values is marked
 unverified. JSON keys are loaded by problem ID and do not receive that document
 matching pass. In either form, inspect the resulting manual rather than
-assuming input structure proves correctness. Accepted JSON forms and fields
-are documented in the [Reference](reference.md).
+assuming input structure proves correctness. See the
+[teacher solution JSON reference](reference.md#teacher-solution-json) for the
+accepted forms and fields.
 
 Solution trust propagates through prerequisites. An evaluator may accept part
 (b)'s work, but if part (a) is an unverified prerequisite, part (b) is also
@@ -193,7 +195,8 @@ autograder grade \
 ```
 
 Add the external solution and rubric inputs you approved when applicable. Use
-the [Reference](reference.md) for the exact flags and command-specific options.
+the [CLI option inventory](reference.md#cli-option-inventory) for exact flags
+and command scopes.
 
 For each student, the mapper searches all pages by problem content rather than
 assuming the blank assignment's page positions. It can associate inserted or
@@ -207,8 +210,8 @@ The normal completion code is `0`. An interrupted command returns `130` and can
 be resumed with the identical command. If some student work remains incomplete,
 the program still writes all available reports, summary rows, review items,
 manifest data, and returns `2`. Other startup or stage errors return `1`; add
-verbose logging when the one-line error is not enough. Exact CLI behavior is in
-the [Reference](reference.md).
+verbose logging when the one-line error is not enough. Exact behavior is in
+the [process exit status reference](reference.md#process-exit-status).
 
 ## Review results and decide what may be released
 
@@ -310,8 +313,9 @@ student's ordered files as that student is encountered.
 | Add or remove a student from the roster | No | The binding is per encountered student, not a complete-roster lock. Class files may be rewritten for the new roster and an old student directory may remain, so always start a new directory. |
 | Reuse an older directory with an unsupported binding schema or settings recorded under an obsolete binding policy | No | Start fresh rather than trying to reinterpret old trust or review behavior. |
 
-The [Reference](reference.md) is authoritative for every cache-relevant setting,
-including programmatic configuration not exposed as a CLI flag.
+The [RunConfig reference](reference.md#runconfig-reference) is authoritative
+for every cache-relevant setting, including programmatic configuration not
+exposed as a CLI flag.
 
 Use `--force` only when the inputs and bound settings are unchanged but every
 stage requested by this command should be rebuilt—for example, after upgrading
