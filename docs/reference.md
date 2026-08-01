@@ -17,12 +17,14 @@ autograder rubric  --assignment PATH --out DIR [shared options] [solution option
 autograder grade   --assignment PATH --submissions PATH [PATH ...] --out DIR [shared options] [solution options] [rubric options] [grading options]
 ```
 
+<!-- cli-subcommands:start -->
 | Command | Last stage requested | Required command-specific input | Embedded outcome |
 |---|---|---|---|
 | `inspect` | Assignment analysis | None beyond the shared assignment and output paths | `AssignmentSpec` |
 | `solve` | Solution generation or checking | None; `--solutions` is optional | `SolutionsManual` |
 | `rubric` | Rubric generation or checking | None; solution and rubric inputs are optional | `Rubric` |
 | `grade` | Submission mapping, transcription, and grading | One or more `--submissions` paths | Returns `list[StudentGrade]` when complete; after writing partial outputs, raises `PartialGradeFailure` whose `grades` and `failures` attributes expose available results |
+<!-- cli-subcommands:end -->
 
 Each later command includes every earlier stage. For example, `grade` creates
 the assignment spec, solutions, and rubric when compatible saved artifacts do
@@ -33,34 +35,38 @@ the public option inventory.
 ## CLI option inventory
 
 `Parser default` is the value produced by `build_parser()` before conversion to
-`RunConfig`; `null` means omitted. `all` means all four subcommands, while
-`root` is reserved for root-parser options. There are currently no public root
-options. Complete scope/alias/destination/default rows are checked against the
-live parser; automatic `argparse` help actions are explicitly excluded.
+`RunConfig`; `null` means omitted. `Nargs` is the number of consumed values,
+with `+` meaning one or more. `Action` is `store` for a value-consuming option
+and `store_true` for a zero-value flag. `Choices` is `any` when the parser does
+not restrict the tokens. `all` means every subcommand in the structured
+command inventory, while `root` is reserved for root-parser options. There are
+currently no public root options. Complete
+scope/alias/destination/arity/action/choice/default rows are checked against
+the live parser; automatic `argparse` help actions are explicitly excluded.
 
 <!-- cli-options:start -->
-| Commands | Options | Destination | Accepted value | Parser default | Effect and interaction |
-|---|---|---|---|---|---|
-| `all` | `--assignment`, `-a` | `assignment` | Existing supported file or directory path | `required` | Blank assignment. A directory contributes its supported files directly inside it. |
-| `all` | `--out`, `-o` | `out` | Directory path | `required` | Run output. It must be disjoint from every input and either new, empty, or compatibly bound. |
-| `all` | `--model` | `model` | Anthropic model ID string | `claude-sonnet-5` | Selects the model and binds cached content. The model must support the requested image, tool, thinking, and effort behavior. |
-| `all` | `--api-key` | `api_key` | Anthropic API key string | `null` | A nonempty option wins; otherwise `ANTHROPIC_API_KEY` is read. The key is not persisted or run-binding identity. |
-| `all` | `--max-workers` | `max_workers` | Positive integer | `4` | Maximum concurrent model tasks inside a parallel stage. Students themselves are processed sequentially. |
-| `all` | `--max-tokens` | `max_tokens` | Positive integer | `null` | Raises both configured token limits. A value below either built-in limit has no effect. |
-| `all` | `--thinking` | `thinking` | `on`, `off` | `on` | Enables adaptive reasoning or requests disabled reasoning. Some model and effort combinations reject `off`. |
-| `all` | `--effort` | `effort` | `low`, `medium`, `high`, `xhigh`, `max` | `null` | Reasoning effort. Omission uses the model default. Compatibility is also checked when thinking is off. |
-| `all` | `--no-prompt-caching` | `no_prompt_caching` | Flag with no value | `false` | Inverts `RunConfig.prompt_caching` to false. It affects request cost behavior, not run identity. |
-| `all` | `--force` | `force` | Flag with no value | `false` | Rebuilds requested stages instead of loading saved artifacts. It cannot override a binding mismatch. |
-| `all` | `--verbose`, `-v` | `verbose` | Flag with no value | `false` | Enables debug logs. Ordinary caught exceptions are re-raised after logging, so a traceback is shown. |
-| `solve, rubric, grade` | `--solutions`, `-s` | `solutions` | Supported document or JSON path | `null` | Omission generates solutions. A supplied key is checked for coverage; JSON and documents have different matching behavior. |
-| `solve, rubric, grade` | `--strict-solutions` | `strict_solutions` | Flag with no value | `false` | Stops on a missing or empty leaf answer instead of generating the gap. Unknown IDs remain warnings. |
-| `solve, rubric, grade` | `--verify-provided-solutions` | `verify_provided_solutions` | Flag with no value | `false` | Independently evaluates supplied answers while first building the manual. Reused manuals are not rechecked. |
-| `rubric, grade` | `--rubric`, `-r` | `rubric` | Supported document or JSON path | `null` | Omission generates a rubric. A supplied rubric is validated, completed unless strict, and normalized to authoritative points. |
-| `rubric, grade` | `--rubric-prompt` | `rubric_prompt` | Text string | `null` | Steers generated rubric content and generated gaps. It does not alter fixed point totals or a complete supplied rubric. |
-| `rubric, grade` | `--strict-rubric` | `strict_rubric` | Flag with no value | `false` | Stops when a leaf has no rubric entry instead of generating the missing entry. It does not waive point consistency. |
-| `grade` | `--submissions`, `-S` | `submissions` | One or more file or directory paths | `required` | Discovers students from every supplied path. Argument order and natural file order determine each submission's page order. |
-| `grade` | `--review-confidence` | `review_confidence` | Float from 0 through 1 inclusive | `0.6` | Queues a completed grade when grader confidence is strictly below the value. Scores are reused when only this changes. |
-| `grade` | `--ocr-threshold` | `ocr_threshold` | Float from 0 through 1 inclusive | `0.5` | Queues nonzero-path work when transcript confidence is strictly below the value. Scores are reused when only this changes. |
+| Commands | Options | Destination | Nargs | Action | Choices | Accepted value | Parser default | Effect and interaction |
+|---|---|---|---|---|---|---|---|---|
+| `all` | `--assignment`, `-a` | `assignment` | `1` | `store` | `any` | Existing supported file or directory path | `required` | Blank assignment. A directory contributes its supported files directly inside it. |
+| `all` | `--out`, `-o` | `out` | `1` | `store` | `any` | Directory path | `required` | Run output. It must be disjoint from every input and either new, empty, or compatibly bound. |
+| `all` | `--model` | `model` | `1` | `store` | `any` | Anthropic model ID string | `claude-sonnet-5` | Selects the model and binds cached content. The model must support the requested image, tool, thinking, and effort behavior. |
+| `all` | `--api-key` | `api_key` | `1` | `store` | `any` | Anthropic API key string | `null` | A nonempty option wins; otherwise `ANTHROPIC_API_KEY` is read. The key is not persisted or run-binding identity. |
+| `all` | `--max-workers` | `max_workers` | `1` | `store` | `any` | Positive integer | `4` | Maximum concurrent model tasks inside a parallel stage. Students themselves are processed sequentially. |
+| `all` | `--max-tokens` | `max_tokens` | `1` | `store` | `any` | Positive integer | `null` | Raises both configured token limits. A value below either built-in limit has no effect. |
+| `all` | `--thinking` | `thinking` | `1` | `store` | `on, off` | `on`, `off` | `on` | Enables adaptive reasoning or requests disabled reasoning. Some model and effort combinations reject `off`. |
+| `all` | `--effort` | `effort` | `1` | `store` | `low, medium, high, xhigh, max` | `low`, `medium`, `high`, `xhigh`, `max` | `null` | Reasoning effort. Omission uses the model default. Compatibility is also checked when thinking is off. |
+| `all` | `--no-prompt-caching` | `no_prompt_caching` | `0` | `store_true` | `any` | Flag with no value | `false` | Inverts `RunConfig.prompt_caching` to false. It affects request cost behavior, not run identity. |
+| `all` | `--force` | `force` | `0` | `store_true` | `any` | Flag with no value | `false` | Rebuilds requested stages instead of loading saved artifacts. It cannot override a binding mismatch. |
+| `all` | `--verbose`, `-v` | `verbose` | `0` | `store_true` | `any` | Flag with no value | `false` | Enables debug logs. Ordinary caught exceptions are re-raised after logging, so a traceback is shown. |
+| `solve, rubric, grade` | `--solutions`, `-s` | `solutions` | `1` | `store` | `any` | Supported document or JSON path | `null` | Omission generates solutions. A supplied key is checked for coverage; JSON and documents have different matching behavior. |
+| `solve, rubric, grade` | `--strict-solutions` | `strict_solutions` | `0` | `store_true` | `any` | Flag with no value | `false` | Stops on a missing or empty leaf answer instead of generating the gap. Unknown IDs remain warnings. |
+| `solve, rubric, grade` | `--verify-provided-solutions` | `verify_provided_solutions` | `0` | `store_true` | `any` | Flag with no value | `false` | Independently evaluates supplied answers while first building the manual. Reused manuals are not rechecked. |
+| `rubric, grade` | `--rubric`, `-r` | `rubric` | `1` | `store` | `any` | Supported document or JSON path | `null` | Omission generates a rubric. A supplied rubric is validated, completed unless strict, and normalized to authoritative points. |
+| `rubric, grade` | `--rubric-prompt` | `rubric_prompt` | `1` | `store` | `any` | Text string | `null` | Steers generated rubric content and generated gaps. It does not alter fixed point totals or a complete supplied rubric. |
+| `rubric, grade` | `--strict-rubric` | `strict_rubric` | `0` | `store_true` | `any` | Flag with no value | `false` | Stops when a leaf has no rubric entry instead of generating the missing entry. It does not waive point consistency. |
+| `grade` | `--submissions`, `-S` | `submissions` | `+` | `store` | `any` | One or more file or directory paths | `required` | Discovers students from every supplied path. Argument order and natural file order determine each submission's page order. |
+| `grade` | `--review-confidence` | `review_confidence` | `1` | `store` | `any` | Float from 0 through 1 inclusive | `0.6` | Queues a completed grade when grader confidence is strictly below the value. Scores are reused when only this changes. |
+| `grade` | `--ocr-threshold` | `ocr_threshold` | `1` | `store` | `any` | Float from 0 through 1 inclusive | `0.5` | Queues nonzero-path work when transcript confidence is strictly below the value. Scores are reused when only this changes. |
 <!-- cli-options:end -->
 
 ### Material option interactions

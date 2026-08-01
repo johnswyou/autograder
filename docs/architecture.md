@@ -270,12 +270,13 @@ is internally consistent.
 
 ### Student mapping
 
-[`mapping.map_student`](../autograder/mapping.py) is one model call per student.
-It receives the stable assignment inventory without blank-assignment answer
-regions, plus full-page submission context. Removing those regions is
-intentional: a scan or export may inset and rescale the original page, making
-the blank page's percentages wrong for the submission. The mapper locates work
-by content across all student pages and returns `StudentMapping`.
+[`mapping.map_student`](../autograder/mapping.py) runs one mapping agent task
+per student; that task may make multiple Messages API calls. It receives the
+stable assignment inventory without blank-assignment answer regions, plus
+full-page submission context. Removing those regions is intentional: a scan or
+export may inset and rescale the original page, making the blank page's
+percentages wrong for the submission. The mapper locates work by content across
+all student pages and returns `StudentMapping`.
 
 Python drops unknown problem IDs and out-of-range pages, adds every omitted leaf
 as `mapping_error`, and converts “work exists” statuses without a usable region

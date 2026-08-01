@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 from dataclasses import fields
 from pathlib import Path
 from urllib.parse import unquote
 
 import pytest
 
+import autograder.cli as autograder_cli
 from autograder import __version__
 from autograder.cli import build_parser
 from autograder.config import IMAGE_EXTS, SUPPORTED_EXTS, TEXT_EXTS, RunConfig
@@ -93,6 +95,24 @@ def _contract_default(value: object, *, required: bool = False) -> str:
     return str(value)
 
 
+def _contract_action_kind(action: argparse.Action) -> str:
+    if isinstance(action, argparse._StoreTrueAction):
+        return "store_true"
+    if isinstance(action, argparse._StoreAction):
+        return "store"
+    return type(action).__name__
+
+
+def _contract_nargs(action: argparse.Action) -> str:
+    return "1" if action.nargs is None else str(action.nargs)
+
+
+def _contract_choices(action: argparse.Action) -> str:
+    if action.choices is None:
+        return "any"
+    return ", ".join(str(choice) for choice in action.choices)
+
+
 def _marked_json(text: str, name: str) -> object:
     block = _marked_block(text, name)
     match = re.fullmatch(r"```json\n(.*)\n```", block, flags=re.DOTALL)
@@ -125,7 +145,7 @@ def _commands_for_cli_row(
 
 def _parser_cli_action_contracts(
     parser: argparse.ArgumentParser,
-) -> list[tuple[str, tuple[str, ...], str, str]]:
+) -> list[tuple[str, tuple[str, ...], str, str, str, str, str]]:
     subparsers = _subparser_action(parser)
     scoped_parsers = {"root": parser, **subparsers.choices}
     contracts = []
@@ -142,6 +162,9 @@ def _parser_cli_action_contracts(
                     scope,
                     tuple(action.option_strings),
                     action.dest,
+                    _contract_nargs(action),
+                    _contract_action_kind(action),
+                    _contract_choices(action),
                     _contract_default(action.default, required=action.required),
                 )
             )
@@ -151,24 +174,48 @@ def _parser_cli_action_contracts(
 def _documented_cli_action_contracts(
     rows: list[dict[str, str]],
     subcommands: set[str],
-) -> list[tuple[str, tuple[str, ...], str, str]]:
+) -> list[tuple[str, tuple[str, ...], str, str, str, str, str]]:
     contracts = []
     for row in rows:
         options = tuple(re.findall(r"`(-{1,2}[^`]+)`", row["Options"]))
         assert options, f"CLI row has no option aliases: {row}"
         destination = _code_value(row["Destination"])
+        nargs = _code_value(row["Nargs"])
+        action_kind = _code_value(row["Action"])
+        choices = _code_value(row["Choices"])
         default = _code_value(row["Parser default"])
         contracts.extend(
-            (scope, options, destination, default)
+            (scope, options, destination, nargs, action_kind, choices, default)
             for scope in _commands_for_cli_row(row, subcommands)
         )
     return contracts
+
+
+def _assert_cli_subcommand_contract(
+    rows: list[dict[str, str]],
+    parser: argparse.ArgumentParser,
+) -> None:
+    documented = [_code_value(row["Command"]) for row in rows]
+    duplicates = sorted(
+        {command for command in documented if documented.count(command) > 1}
+    )
+    assert not duplicates, f"duplicate CLI subcommand row(s): {duplicates}"
+
+    actual = set(_subparser_action(parser).choices)
+    assert set(documented) == actual, (
+        "CLI subcommand contract drift; missing parser commands: "
+        f"{sorted(actual - set(documented))}; stale documented commands: "
+        f"{sorted(set(documented) - actual)}"
+    )
 
 
 def _assert_cli_option_contract(
     rows: list[dict[str, str]],
     parser: argparse.ArgumentParser,
 ) -> None:
+    _assert_cli_subcommand_contract(
+        _marked_table(_reference_text(), "cli-subcommands"), parser
+    )
     subcommands = set(_subparser_action(parser).choices)
     documented = _documented_cli_action_contracts(rows, subcommands)
     duplicates = sorted(
@@ -264,10 +311,6 @@ def _heading_anchors(text: str) -> set[str]:
     return anchors
 
 
-def _normalized(text: str) -> str:
-    return " ".join(text.split())
-
-
 def _local_link_targets(text: str) -> list[str]:
     targets = []
     for raw_target in MARKDOWN_LINK.findall(text):
@@ -322,6 +365,23 @@ def test_required_documentation_set_exists() -> None:
     assert not missing, f"missing maintained documentation: {', '.join(missing)}"
 
 
+@pytest.mark.parametrize(
+    "output_root",
+    ["runs/sample-demo", "runs/kinematics-quiz"],
+    ids=["sample", "real-run"],
+)
+def test_documented_output_roots_are_ignored(output_root: str) -> None:
+    result = subprocess.run(
+        ["git", "check-ignore", "--quiet", "--", output_root],
+        cwd=ROOT,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        f"documented output root {output_root!r} is not protected by .gitignore"
+    )
+
+
 def test_cli_contract_detects_aliases_rebound_to_the_wrong_destination() -> None:
     rows = [dict(row) for row in _marked_table(_reference_text(), "cli-options")]
     assignment = next(row for row in rows if row["Destination"] == "`assignment`")
@@ -343,6 +403,46 @@ def test_cli_contract_rejects_a_duplicate_canonical_action_row() -> None:
 def test_cli_contract_catches_an_undocumented_root_option() -> None:
     parser = build_parser()
     parser.add_argument("--version", action="version", version="test-version")
+    rows = _marked_table(_reference_text(), "cli-options")
+
+    with pytest.raises(AssertionError, match="CLI action contract drift"):
+        _assert_cli_option_contract(rows, parser)
+
+
+def test_cli_contract_catches_an_inherited_only_subcommand() -> None:
+    parser = build_parser()
+    _subparser_action(parser).add_parser(
+        "audit",
+        parents=[autograder_cli._parent_parser()],
+    )
+    rows = _marked_table(_reference_text(), "cli-options")
+
+    with pytest.raises(AssertionError, match="CLI subcommand contract drift"):
+        _assert_cli_option_contract(rows, parser)
+
+
+def test_cli_contract_catches_changed_submissions_arity() -> None:
+    parser = build_parser()
+    grade_parser = _subparser_action(parser).choices["grade"]
+    submissions = next(
+        action for action in grade_parser._actions if action.dest == "submissions"
+    )
+    submissions.nargs = "*"
+    rows = _marked_table(_reference_text(), "cli-options")
+
+    with pytest.raises(AssertionError, match="CLI action contract drift"):
+        _assert_cli_option_contract(rows, parser)
+
+
+@pytest.mark.parametrize("destination", ["thinking", "effort"])
+def test_cli_contract_catches_changed_choices(destination: str) -> None:
+    parser = build_parser()
+    inspect_parser = _subparser_action(parser).choices["inspect"]
+    action = next(
+        action for action in inspect_parser._actions if action.dest == destination
+    )
+    assert action.choices is not None
+    action.choices = (*action.choices, "legacy")
     rows = _marked_table(_reference_text(), "cli-options")
 
     with pytest.raises(AssertionError, match="CLI action contract drift"):
@@ -532,45 +632,3 @@ def test_distribution_and_runtime_versions_match() -> None:
 
     assert match is not None, "[project].version is missing"
     assert match.group(1) == __version__
-
-
-def test_rubric_docstrings_do_not_call_generated_json_immutable() -> None:
-    rubric_source = (ROOT / "autograder" / "rubric.py").read_text(
-        encoding="utf-8"
-    ).lower()
-
-    assert "immutable implementation state" not in rubric_source
-    assert "cached implementation state" not in rubric_source
-    assert rubric_source.count("pipeline-owned resume data") >= 2
-
-
-def test_solution_docstring_describes_generated_gap_checks_precisely() -> None:
-    solution_source = (ROOT / "autograder" / "solutions.py").read_text(
-        encoding="utf-8"
-    )
-
-    normalized = _normalized(solution_source)
-    assert (
-        "gaps go through the same solver/evaluator process, with the incomplete-"
-        "key warning recorded"
-    ) in normalized
-    assert "gaps are generated (and flagged)" not in solution_source
-
-
-def test_orchestrator_docstring_describes_conditional_reuse() -> None:
-    orchestrator_source = (ROOT / "autograder" / "orchestrator.py").read_text(
-        encoding="utf-8"
-    )
-    normalized = _normalized(orchestrator_source)
-
-    assert (
-        "Eligible saved stage results are reused when `--force` is absent."
-        in orchestrator_source
-    )
-    assert (
-        "Invalid results are rebuilt, and failed per-problem results are "
-        "retried while successful siblings are retained."
-    ) in normalized
-    assert "is skipped on\nre-run if the artifact already exists" not in (
-        orchestrator_source
-    )

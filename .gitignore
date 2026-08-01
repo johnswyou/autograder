@@ -2,6 +2,7 @@
 # graded submissions -- never commit them.
 GRADING/
 examples/sample/
+/runs/
 
 # Python build artifacts
 __pycache__/
