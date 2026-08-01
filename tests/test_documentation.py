@@ -13,8 +13,8 @@ import pytest
 
 from autograder import __version__
 from autograder.cli import build_parser
-from autograder.config import RunConfig
-from autograder.models import Rubric
+from autograder.config import IMAGE_EXTS, SUPPORTED_EXTS, TEXT_EXTS, RunConfig
+from autograder.models import AssignmentSpec, Problem, Rubric
 from autograder.solutions import parse_provided_solutions
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,6 +100,39 @@ def _marked_json(text: str, name: str) -> object:
     return json.loads(match.group(1))
 
 
+def _reference_text() -> str:
+    return (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
+
+
+def _cli_reference_contract():
+    rows = _marked_table(_reference_text(), "cli-options")
+    parser = build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    return rows, subparsers, set(subparsers.choices)
+
+
+def _commands_for_cli_row(
+    row: dict[str, str],
+    commands: set[str],
+) -> set[str]:
+    scopes = _code_value(row["Commands"])
+    row_commands = commands if scopes == "all" else set(scopes.split(", "))
+    assert row_commands <= commands, f"unknown documented command scope: {scopes}"
+    return row_commands
+
+
+def _runconfig_reference_rows() -> list[dict[str, str]]:
+    reference = _reference_text()
+    return [
+        *_marked_table(reference, "runconfig-public"),
+        *_marked_table(reference, "runconfig-advanced"),
+    ]
+
+
 def _heading_anchors(text: str) -> set[str]:
     anchors: set[str] = set()
     occurrences: dict[str, int] = {}
@@ -181,15 +214,7 @@ def test_required_documentation_set_exists() -> None:
 
 
 def test_reference_cli_option_table_catches_parser_option_and_scope_drift() -> None:
-    reference = (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
-    rows = _marked_table(reference, "cli-options")
-    parser = build_parser()
-    subparsers = next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
-    )
-    commands = set(subparsers.choices)
+    rows, subparsers, commands = _cli_reference_contract()
     actual = {
         (command, option)
         for command, command_parser in subparsers.choices.items()
@@ -200,9 +225,7 @@ def test_reference_cli_option_table_catches_parser_option_and_scope_drift() -> N
 
     documented: set[tuple[str, str]] = set()
     for row in rows:
-        scopes = _code_value(row["Commands"])
-        row_commands = commands if scopes == "all" else set(scopes.split(", "))
-        assert row_commands <= commands, f"unknown documented command scope: {scopes}"
+        row_commands = _commands_for_cli_row(row, commands)
         options = re.findall(r"`(-{1,2}[^`]+)`", row["Options"])
         assert options, f"CLI row has no option aliases: {row}"
         documented.update(
@@ -217,15 +240,7 @@ def test_reference_cli_option_table_catches_parser_option_and_scope_drift() -> N
 
 
 def test_reference_cli_option_table_catches_parser_default_drift() -> None:
-    reference = (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
-    rows = _marked_table(reference, "cli-options")
-    parser = build_parser()
-    subparsers = next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
-    )
-    commands = set(subparsers.choices)
+    rows, subparsers, commands = _cli_reference_contract()
     actual = {
         (command, action.dest): _contract_default(
             action.default,
@@ -238,8 +253,7 @@ def test_reference_cli_option_table_catches_parser_default_drift() -> None:
 
     documented: dict[tuple[str, str], str] = {}
     for row in rows:
-        scopes = _code_value(row["Commands"])
-        row_commands = commands if scopes == "all" else set(scopes.split(", "))
+        row_commands = _commands_for_cli_row(row, commands)
         destination = _code_value(row["Destination"])
         default = _code_value(row["Parser default"])
         for command in row_commands:
@@ -252,11 +266,7 @@ def test_reference_cli_option_table_catches_parser_default_drift() -> None:
 
 
 def test_reference_runconfig_tables_catch_field_and_default_drift() -> None:
-    reference = (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
-    rows = [
-        *_marked_table(reference, "runconfig-public"),
-        *_marked_table(reference, "runconfig-advanced"),
-    ]
+    rows = _runconfig_reference_rows()
     documented = {
         _code_value(row["Field"]): _code_value(row["Default"]) for row in rows
     }
@@ -270,10 +280,39 @@ def test_reference_runconfig_tables_catch_field_and_default_drift() -> None:
     )
 
 
+def test_reference_runconfig_tables_catch_cache_binding_drift() -> None:
+    rows = _runconfig_reference_rows()
+    documented = {
+        _code_value(row["Field"])
+        for row in rows
+        if row["Run binding"] == "yes"
+    }
+
+    assert documented == set(RunConfig().cache_identity()), (
+        "RunConfig cache-identity drift; update the structured Run binding cells"
+    )
+
+
+def test_reference_document_format_table_catches_ingestion_constant_drift() -> None:
+    rows = _marked_table(_reference_text(), "document-formats")
+
+    def suffixes(source: str) -> set[str]:
+        return {
+            suffix
+            for row in rows
+            if source in row["Source constants"]
+            for suffix in re.findall(r"`(\.[a-z]+)`", row["Suffix"])
+        }
+
+    assert suffixes("SUPPORTED_EXTS") == SUPPORTED_EXTS
+    assert suffixes("IMAGE_EXTS") == IMAGE_EXTS
+    assert suffixes("TEXT_EXTS") == TEXT_EXTS
+
+
 def test_reference_solution_json_example_matches_the_accepted_parser_shape(
     tmp_path: Path,
 ) -> None:
-    reference = (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
+    reference = _reference_text()
     example = _marked_json(reference, "solution-json-example")
     key_path = tmp_path / "solutions.json"
     key_path.write_text(json.dumps(example), encoding="utf-8")
@@ -281,7 +320,7 @@ def test_reference_solution_json_example_matches_the_accepted_parser_shape(
     solutions, issues = parse_provided_solutions(
         None,
         RunConfig(),
-        None,
+        AssignmentSpec(problems=[Problem(id="1")]),
         key_path,
         None,
         None,
@@ -293,7 +332,7 @@ def test_reference_solution_json_example_matches_the_accepted_parser_shape(
 
 
 def test_reference_rubric_json_example_matches_the_pydantic_input_shape() -> None:
-    reference = (ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
+    reference = _reference_text()
     example = _marked_json(reference, "rubric-json-example")
 
     rubric = Rubric.model_validate(example)

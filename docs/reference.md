@@ -89,14 +89,16 @@ table are checked against the live parser.
 
 ### Document formats
 
-| Suffix | Kind | Multi-file behavior |
-|---|---|---|
-| `.pdf` | Visual PDF; pages render on demand and an embedded text layer may be read | May be combined with other PDFs and raster images |
-| `.png` | Raster image; one page per file | May be combined with PDFs and other raster images |
-| `.jpg`, `.jpeg` | Raster image; one page per file | May be combined with PDFs and other raster images |
-| `.md`, `.markdown` | UTF-8 text chunked into pseudo-pages | Must be the only file in that document |
-| `.tex` | UTF-8 LaTeX source chunked into pseudo-pages; it is not compiled | Must be the only file in that document |
-| `.json` | Structured teacher input only | Accepted for `--solutions` and `--rubric`, not as an assignment or submission document |
+<!-- document-formats:start -->
+| Suffix | Source constants | Kind | Multi-file behavior |
+|---|---|---|---|
+| `.pdf` | `SUPPORTED_EXTS` | Visual PDF; pages render on demand and an embedded text layer may be read | May be combined with other PDFs and raster images |
+| `.png` | `SUPPORTED_EXTS`, `IMAGE_EXTS` | Raster image; one page per file | May be combined with PDFs and other raster images |
+| `.jpg`, `.jpeg` | `SUPPORTED_EXTS`, `IMAGE_EXTS` | Raster image; one page per file | May be combined with PDFs and other raster images |
+| `.md`, `.markdown` | `SUPPORTED_EXTS`, `TEXT_EXTS` | UTF-8 text chunked into pseudo-pages | Must be the only file in that document |
+| `.tex` | `SUPPORTED_EXTS`, `TEXT_EXTS` | UTF-8 LaTeX source chunked into pseudo-pages; it is not compiled | Must be the only file in that document |
+| `.json` | Teacher solution and rubric suffix branches | Structured teacher input only | Accepted for `--solutions` and `--rubric`, not as an assignment or submission document |
+<!-- document-formats:end -->
 
 An explicit unsupported file raises an ingestion error. When a directory is a
 document or discovery root, only supported files directly inside the relevant
@@ -142,8 +144,9 @@ the run.
 
 Student IDs are converted to safe artifact directory slugs by replacing unsafe
 character runs with `_`, trimming leading dots, and using `student` if nothing
-remains. Colliding slugs receive `_2`, `_3`, and so on. The original discovered
-ID remains in reports and models; `students/<slug>/` uses the safe form.
+remains. On a collision, discovery renames the later student ID itself with
+`_2`, `_3`, and so on until its slug is unique. That suffixed ID appears in
+reports and models, and its safe form names `students/<slug>/`.
 
 ## Teacher solution JSON
 
@@ -208,7 +211,9 @@ problem dependencies.
 ## Teacher rubric JSON
 
 Rubric JSON is validated as the `Rubric` Pydantic model. Extra fields are
-forbidden. Every score is numeric and nonnegative.
+forbidden. Problem and criterion point fields are numeric and nonnegative;
+`total_points` is a number or null without its own range constraint, and the
+normalized output total is recomputed from accepted problem weights.
 
 <!-- rubric-json-example:start -->
 ```json
@@ -525,7 +530,7 @@ mechanically.
 | `max_source_pixels` | `40000000` | Positive integer; raster header rejection limit | yes |
 | `max_pixels` | `3400000` | Positive integer; rendered-image pixel cap | yes |
 | `solution_max_rounds` | `2` | Integer zero or greater; regeneration rounds after the initial solution attempt | yes |
-| `max_tool_images` | `20` | Integer zero or greater; retained tool-result images before oldest-first eviction | yes |
+| `max_tool_images` | `20` | Integer zero or greater; a positive value retains that many tool-result images before oldest-first eviction, while zero disables eviction | yes |
 <!-- runconfig-advanced:end -->
 
 Construction validates all listed ranges. The implementation does not perform
