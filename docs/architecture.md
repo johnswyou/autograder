@@ -1,732 +1,577 @@
 # Architecture
 
-This guide describes how Agentic Autograder is organized, how data moves
-between stages, and which guarantees contributors must preserve. It is written
-for people changing the code or embedding the pipeline. Instructors looking
-for commands and operating procedures should use the [usage guide](usage.md).
+This is the contributor guide to the runtime: where execution enters, how a
+page becomes model-visible content, which module owns each judgment, and which
+guarantees ordinary Python enforces after model work. For the instructor's
+workflow, use [Usage](usage.md). For exact options, defaults, input layouts,
+artifact fields, and statuses, use [Reference](reference.md). For a shorter
+reader-level explanation, use [How it works](how-it-works.md).
 
-- [Architectural overview](#architectural-overview)
-- [System layers](#system-layers)
-- [Safe persistence and reuse](#safe-persistence-and-reuse)
-- [Pipeline stages](#pipeline-stages)
-- [Agent runtime](#agent-runtime)
-- [Data model](#data-model)
-- [Programmatic integration](#programmatic-integration)
-- [Testing the architecture](#testing-the-architecture)
-- [Design decisions](#design-decisions)
+## Start at the real entry point
 
-## Architectural overview
+`autograder` enters [`cli.main`](../autograder/cli.py). The CLI parser checks
+syntax and local option ranges, `_to_config` constructs a `RunConfig` and reads
+`ANTHROPIC_API_KEY`, and `main` constructs one `Pipeline`. It then calls exactly
+one command-level entry point:
 
-Agentic Autograder is a file-backed pipeline. Model agents interpret documents
-and make domain judgments; typed Pydantic models define every stage boundary;
-ordinary Python code enforces scoring, review, persistence, and recovery rules.
+| CLI command | Public call | Last stage requested |
+|---|---|---|
+| `inspect` | `Pipeline.run_inspect()` | Assignment structure |
+| `solve` | `Pipeline.run_solve(...)` | Solutions manual |
+| `rubric` | `Pipeline.run_rubric(...)` | Rubric |
+| `grade` | `Pipeline.run_grade(...)` | Student and class reports |
 
-### Terms used in this guide
+The command matrix and argument defaults live in
+[Reference](reference.md#command-syntax), not here.
 
-An **artifact** is a generated, structured file that one pipeline stage writes
-for another stage to read. Examples include `assignment_spec.json`,
-`mapping.json`, and `grades.json`.
-
-A **gradable leaf** is the lowest-level problem or subproblem that receives its
-own rubric entry and score. A parent problem that only groups parts is not a
-gradable leaf.
-
-A **grading setup** is the set of inputs and settings associated with one
-output directory. In the implementation, `RunState` records that identity in
-`run_binding.json`.
-
-These terms distinguish three kinds of state:
-
-- source inputs supplied by an instructor or student;
-- typed Python objects exchanged while a command is running; and
-- generated artifacts retained so later stages or repeated commands can use
-  completed work.
+`Pipeline.__init__` performs the first important boundary checks before any
+model client exists. It rejects overlap between the assignment and output,
+hashes the assignment, opens or creates `run_binding.json` through `RunState`,
+and opens the assignment as a page-oriented `Document`. The Anthropic client is
+lazy: a fully reusable call path never evaluates `Pipeline.client` and therefore
+does not need an API key. Every public `run_*` method closes the assignment in a
+`finally` block. `Pipeline.close()` is also public and idempotent.
 
 ```mermaid
 flowchart TD
-  CLI["CLI: inspect / solve / rubric / grade"] --> CFG["RunConfig"]
-  CFG --> P["Pipeline"]
-
-  A["Blank assignment"] --> I["Document ingestion"]
-  S["Student submissions"] --> I
-  K["Optional answer key"] --> I
-  R0["Optional rubric"] --> I
-
-  I --> P
-  P --> SETUP["run_binding.json<br/>grading-setup identity"]
-  P --> SPEC["assignment_spec.json"]
-  SPEC --> SOL["solutions_manual.json / .md"]
-  SOL --> RUB["rubric.json / .md"]
-  RUB --> MAP["per-student mapping.json"]
-  MAP --> OCR["per-student transcripts.json"]
-  OCR --> GRADES["per-student grades.json + report.md"]
-
-  GRADES --> SUMMARY["summary.csv"]
-  GRADES --> REVIEW["review_queue.md"]
-  P --> MANIFEST["run_manifest.json"]
+  CLI["cli.main<br/>parse arguments and RunConfig"] --> PIPE["Pipeline public run_* entry point"]
+  PIPE --> BIND["RunState<br/>validate assignment, config, and later inputs"]
+  BIND --> DOC["Document<br/>open assignment and submissions"]
+  DOC --> SPEC["Assignment structure"]
+  SPEC --> SOL["Solutions"]
+  SOL --> RUB["Rubric"]
+  RUB --> MAP["Map one student across full pages"]
+  MAP --> OCR["Transcribe each gradable leaf"]
+  OCR --> GRADE["Grade each gradable leaf"]
+  GRADE --> POST["Deterministic finalization and aggregation"]
+  POST --> FILES["Atomic JSON, Markdown, and CSV writes"]
+  FILES --> HUMAN["Instructor review and final decision"]
 ```
 
-## System layers
+Assignment-level work runs once along the requested path. During `grade`,
+students run sequentially; independent problem tasks within a student run in
+worker pools. This avoids multiplying student documents and worker pools at the
+same time while still parallelizing the expensive per-problem calls.
 
-The repository separates command parsing, coordination, document access, model
-work, domain schemas, and reporting. The dependency direction is intentional:
-stage modules ask the shared runtime to perform model work, while the pipeline
-coordinates stages and owns persistence.
+## Follow one visual answer from bytes to a grade
+
+The visual path is concrete. A PDF is not sent to Anthropic as a filename, and
+there is no separate OCR service hidden behind the pipeline.
 
 ```mermaid
 flowchart LR
-  subgraph Interface
-    CLI["cli.py"]
-    CFG["config.py<br/>RunConfig"]
-  end
-
-  subgraph Coordination
-    PIPE["orchestrator.py<br/>Pipeline"]
-    STATE["run_state.py<br/>RunState"]
-    REPORT["report.py<br/>writers"]
-  end
-
-  subgraph DomainModels
-    MODELS["models.py<br/>Pydantic models"]
-  end
-
-  subgraph DocumentRuntime
-    INGEST["ingest.py<br/>Document"]
-    TOOLS["tools.py<br/>ToolKit"]
-  end
-
-  subgraph AgentRuntime
-    LLM["llm.py<br/>run_agent"]
-    STAGES["assignment / solutions / rubric<br/>mapping / ocr / grading"]
-  end
-
-  CLI --> CFG --> PIPE
-  PIPE --> STATE
-  PIPE --> STAGES
-  STAGES --> LLM
-  LLM --> TOOLS
-  TOOLS --> INGEST
-  STAGES --> MODELS
-  LLM --> MODELS
-  PIPE --> REPORT
-  REPORT --> MODELS
+  SRC["PDF or image bytes"] --> D["ingest.Document"]
+  D --> R["render_page / render_region"]
+  R --> J["JPEG bytes"]
+  J --> IB["image_block<br/>base64 + image/jpeg"]
+  IB --> MSG["Anthropic user content"]
+  MSG --> LOOP["llm.run_agent<br/>Messages stream + tools"]
+  LOOP --> SUB["submit_result tool input"]
+  SUB --> PYD["Pydantic result model"]
+  PYD --> RULES["stage normalization / score rules"]
+  RULES --> RESUME["Atomic mapping / transcript<br/>resume artifacts"]
+  RULES --> AGG["ProblemGrade to<br/>StudentGrade aggregation"]
+  RESUME --> AGG
+  AGG --> GJSON["Atomic grades.json"]
+  GJSON --> REPORT["report.md, summary.csv,<br/>review_queue.md, manifest"]
 ```
 
-### Command-line interface and configuration
+### 1. `Document` turns sources into pages
 
-`autograder/cli.py` defines `inspect`, `solve`, `rubric`, and `grade`. It parses
-arguments, validates combinations that can be checked without model work,
-constructs `RunConfig`, invokes the matching `Pipeline` method, and translates
-completion or failure into a process exit code.
+[`ingest.py`](../autograder/ingest.py) accepts PDFs, raster images, and a single
+Markdown or LaTeX source. A multi-file visual submission is naturally sorted
+and its PDF pages and photos are concatenated into one 1-based page sequence.
+Text sources are divided into character-bounded chunks and use text content
+instead of the image path.
 
-`autograder/config.py` owns operational defaults. `RunConfig` includes the
-model, API key, worker count, token limits, thinking and effort choices, review
-thresholds, prompt-caching choice, rendering limits, and `force`. Its
-saved-result identity deliberately excludes secrets such as the API key while
-including settings that can change generated results.
+For a PDF, `Document.render_page` asks PyMuPDF for a pixmap at a scale bounded
+*before allocation*, converts that pixmap to a Pillow RGB image, applies any
+requested clockwise view rotation, enforces a final pixel cap, and calls
+`_encode_jpeg`. `render_region` converts a percentage rectangle into a PDF clip
+and re-renders that clip at higher effective resolution. For a photo, the same
+methods resize the decoded RGB image or crop its existing pixels, with a
+separate upscale limit for crops. Rotation-aware coordinate conversion maps a
+box measured in a rotated view back to the original page before cropping.
 
-The four commands expose progressively larger portions of one pipeline:
+`_encode_jpeg` tries successively lower JPEG qualities against its byte target
+and, as a final fallback, shrinks once and encodes again. `render_page` and
+`render_region` therefore return JPEG `bytes`, not Pillow or PyMuPDF objects.
+The configured source-pixel guard is checked from raster headers before EXIF
+transpose, full conversion, or later rendering. Page-backed access is protected
+by a per-document reentrant lock because transcribers and graders share a
+`Document` across threads and PyMuPDF does not supply embedding locks.
 
-| Command | Pipeline entry point | Last requested assignment-level stage |
+### 2. JPEG bytes become Anthropic image content
+
+[`tools.image_block`](../autograder/tools.py) uses standard base64 encoding and
+returns this request shape:
+
+`type=image`, `source.type=base64`, `source.media_type=image/jpeg`, and
+`source.data=<ASCII base64>`.
+
+`inline_pages` places up to the configured initial-page cap into the first user
+message and adds a notice telling the model to fetch later pages. `ToolKit`
+exposes four shared tools:
+
+| Tool | Deterministic implementation |
+|---|---|
+| `view_page` | Return text for a text source, or render a normal/high-detail full-page JPEG. |
+| `zoom` | Return text for a text source, or render a percentage crop with rotation handling. |
+| `read_text` | Return source text or a PDF text layer; report an error for scans and photos. |
+| `compute` | Evaluate only the numeric AST accepted by `config.safe_eval`. |
+
+Tool failures are returned as error tool results so the model can recover. An
+unexpected dispatcher exception is also converted to an error block rather
+than crashing the agent loop.
+
+Initial and stage-specific image selection is intentionally bounded:
+
+- assignment inspection, submission mapping, and document parsers inline at
+  most `inline_page_cap` pages;
+- a solution task includes at most four referenced-figure crops and two visual
+  assignment pages (or three text chunks);
+- a transcription task initially includes at most eight mapped crops (or six
+  text chunks); and
+- a grading task initially includes only the first mapped crop and tells the
+  grader to fetch the remaining regions with tools.
+
+Every rendered image also obeys `max_pixels`; raster sources obey
+`max_source_pixels`; raster zooms obey `max_upscale`. The canonical defaults are
+in [the `RunConfig` reference](reference.md#runconfig-reference).
+
+### 3. One shared Messages tool loop returns a typed result
+
+Every stage creates an `AgentTask` and calls
+[`llm.run_agent`](../autograder/llm.py). The task supplies a system prompt,
+initial user content, its allowed `ToolKit` methods, a Pydantic result type, an
+output-token budget, a turn limit, and a log context. `run_agent` adds a required
+`submit_result` tool whose input schema is `result_model.model_json_schema()`.
+
+The request uses the Anthropic Messages streaming interface
+(`client.messages.stream(...).get_final_message()`). Streaming avoids the SDK's
+estimated-duration ceiling for large output budgets while returning the normal
+Message shape. The loop preserves response content—including thinking blocks—
+as the next assistant message. Non-submit tool calls are dispatched and their
+text/image results are appended as the next user message.
+
+A result crosses the agent boundary only when the model calls `submit_result`
+and `model_validate` succeeds. All artifact models forbid extra fields, so an
+unexpected wrapper or misspelled field cannot be silently accepted. A
+validation error is sent back as an error tool result for repair. If the model
+ends normally without a tool call, it receives at most two submit nudges.
+`max_tokens`, refusal, and model-context-window stop reasons fail immediately
+with targeted messages because a nudge cannot repair them. The task's turn
+limit bounds validation and tool repair loops.
+
+The Anthropic client is configured for up to six SDK retries of transient API
+failures. After the SDK gives up, `run_agent` raises `AgentError` with the stage,
+context, and turn. That API retry policy is distinct from solution regeneration
+rounds and from later resume of failed artifacts.
+
+Prompt caching places an ephemeral breakpoint on the system/tool prefix and
+moves a second breakpoint to the last eligible user block as the conversation
+grows. A positive `max_tool_images` retains only that many tool-result images,
+replacing older ones with a text notice; the initial user images are never
+evicted. Setting it to zero disables eviction. Re-fetching an evicted view is
+always allowed.
+
+`UsageMeter` adds the usage returned by every completed Messages response under
+a lock, including ordinary input/output tokens and cache creation/read tokens.
+The final manifest reports the meter snapshot for the current command
+invocation only. Reusing an artifact has no historical usage attached, and a
+later resume does not add the previous manifest's counts.
+
+## Runtime stages and their boundaries
+
+The important division is not “AI code” versus “normal code.” Each stage has a
+model judgment, a deterministic acceptance/finalization layer, and an
+instructor responsibility.
+
+| Boundary | Owns | Does not guarantee |
 |---|---|---|
-| `inspect` | `Pipeline.run_inspect()` | Assignment structure |
-| `solve` | `Pipeline.run_solve()` | Solutions |
-| `rubric` | `Pipeline.run_rubric()` | Rubric |
-| `grade` | `Pipeline.run_grade()` | Student reports and class outputs |
-
-### Pipeline orchestration
-
-`autograder/orchestrator.py` owns stage order and dependencies. Each
-assignment-level `stage_*` method produces one typed result, and `_load_or`
-either reads an eligible saved artifact or calls the function that rebuilds
-it. `Pipeline` also coordinates per-student mapping, transcription, grading,
-report writing, the review queue, and the final manifest.
-
-The orchestrator does not decide whether an output directory belongs to the
-requested grading setup. It delegates that check to `RunState` before reading
-saved artifacts or creating a model client. This keeps input consistency and
-recovery rules centralized.
-
-The `run_state.py` output seam checks the assignment before opening the output
-directory, optional teacher materials before binding them, raw submission paths
-before discovery, and exact student files before processing. `--out` must be
-disjoint from the assignment, answer key, rubric, and submissions: equal paths
-and either ancestor/descendant relationship are rejected, while sibling paths
-are valid.
-
-### Document and agent tools
-
-`autograder/ingest.py` converts PDFs, images, Markdown, and LaTeX into a
-page-oriented `Document`. A submission may combine several PDFs and photos in
-natural filename order. Downstream code uses page numbers, optional PDF text
-layers, rendered images, and percentage-based rectangular regions rather than
-format-specific APIs.
-
-Page-backed operations use a per-document lock. Several agents can share a
-document across threads, but rendering and text access are serialized because
-the MuPDF embedder must provide safe locking.
-
-Raster source dimensions are read from image headers. A source above
-`max_source_pixels` (40,000,000 by default) is rejected before EXIF handling,
-full decode, or RGB conversion. Before PyMuPDF allocates a page/crop pixmap or
-Pillow resizes a raster page/crop, `ingest.py` bounds the scale so its
-ceiling-rounded dimensions fit `max_pixels` (3,400,000 by default).
-`_cap_pixels` remains a final post-allocation invariant; it is not the primary
-allocation guard. Operators should resize oversized source photos before
-grading.
-
-`autograder/tools.py` exposes four tools to model agents:
-
-| Tool | Responsibility |
-|---|---|
-| `view_page` | Render a full page at normal or high detail, optionally rotated. |
-| `zoom` | Render a cropped region at higher effective resolution. |
-| `read_text` | Read an embedded text layer for exact typeset content. |
-| `compute` | Evaluate restricted arithmetic without allowing arbitrary code. |
-
-Regions use percentages so coordinates remain stable across rendering sizes.
-Small rounding slop outside 0-100 is clamped, but a coordinate far outside that
-range means the agent measured in another unit, usually pixels; the region is
-rejected so the schema-repair loop returns the error and the agent can restate
-it. Clamping such a value instead would yield a zero-width sliver that renders
-blank while still looking like a valid location. Raster crops may be enlarged up
-to `max_upscale`, but every rendered image must remain below `max_pixels`.
-
-The arithmetic evaluator accepts a small AST allowlist. It rejects names,
-attributes, imports, and other code, and it caps expensive operations and large
-intermediate integers.
-
-### Stage-specific agents
-
-The domain modules own prompts and stage rules:
-
-| Module | Responsibility |
-|---|---|
-| `assignment.py` | Build and normalize the assignment structure. |
-| `solutions.py` | Parse a supplied key or generate and evaluate solutions. |
-| `rubric.py` | Parse, generate, and normalize scoring criteria. |
-| `mapping.py` | Locate each gradable leaf in a submission by content. |
-| `ocr.py` | Transcribe located work without correcting student mistakes. |
-| `grading.py` | Apply fixed rubric criteria and finalize review decisions. |
-
-These modules prepare `AgentTask` values and interpret typed results. They do
-not implement separate API loops; all model interaction runs through
-`autograder/llm.py`.
-
-Student-facing agents treat submission contents as untrusted data. Mapping,
-transcription, and grading prompts tell the model to ignore instruction-like
-text in a submission, record it as an integrity concern, and continue the
-assigned task.
-
-### Reports and structured models
-
-`autograder/models.py` contains the Pydantic models shared by prompts,
-orchestration, persistence, and report generation. Stage results are validated
-before the pipeline can use or save them.
-
-`autograder/report.py` owns the shared Markdown and CSV output encoders and
-renders student and class reports. `autograder/solutions.py` and
-`autograder/rubric.py` reuse its Markdown encoder for the solutions manual and
-rubric. Every generated Markdown artifact renders assignment, student, and
-agent text as inert data; text-valued CSV cells are formula-neutralized before
-spreadsheet import. Numeric CSV score fields remain numeric. Both encoders
-rewrite NUL as a visible `\x00`: `csv.writer` rejects the raw character on
-Python 3.10, and a single raw NUL makes a Markdown report read as a binary file.
-
-`run_manifest.json` is the command audit record. It includes the tool version,
-timestamps, model, selected run configuration, input hashes, recorded issues,
-and token usage accumulated during the current command invocation. The API key
-is excluded.
-
-## Safe persistence and reuse
-
-Persistence is part of the pipeline contract, not a command-line convenience.
-Before considering saved work, `RunState` verifies the assignment and settings,
-compares the digest of every requested input whose name was recorded earlier,
-and records digests for new input names.
-
-Before each matching bind, discovery, or stage can examine an input, the
-pipeline rejects an output path that equals, contains, or is contained by an
-assignment, answer key, rubric, raw submission path, or discovered submission
-file. The assignment check occurs before the output directory is created. This
-prevents generated artifacts from being mistaken for source input.
-
-### Checking that inputs still match
-
-Before the pipeline reads any saved artifact or creates a model client,
-`RunState` compares the requested setup with `run_binding.json`. A mismatch in
-any recorded value is an error, not a warning, because combining results from
-different assignments, teacher materials, student files, or model settings
-could silently corrupt grades.
-
-The schema-version-2 file records:
-
-- the assignment SHA-256;
-- the identity of `RunConfig` settings that affect generated results, which is
-  exactly what `RunConfig.cache_identity()` returns;
-- each supplied answer key and rubric SHA-256, or `generated` when omitted;
-- a digest of `--rubric-prompt`, or `none` when omitted; and
-- one order-sensitive `submission:<slug>` digest for each student's files.
-
-`cache_identity()` deliberately excludes both secrets (the API key) and
-execution-only choices that cannot change an artifact's contents: `max_workers`,
-`prompt_caching`, `verbose`, and `force`. Excluding `force` is what lets
-`--force` rebuild an existing directory; treating it as part of the identity
-would reject the flag in the one situation it exists for.
-
-The two review thresholds, `review_confidence` and `ocr_review_threshold`, are
-excluded for a different reason. They do change what a saved grade says, but
-only its `needs_review` mark, and that mark is recomputed on every read by
-`grading.apply_review_thresholds()`. A `ProblemGrade` stores the review reasons
-that describe the work in `intrinsic_review_reasons`; the two confidence
-comparisons are re-derived from the current settings and appended to those.
-Keeping the thresholds out of the identity is therefore safe, and it lets an
-operator re-read a finished run at a different threshold for free.
-
-A mismatch names the settings that differ, so a deliberate model change is
-distinguishable from an accidentally carried-over one. A setting present in a
-saved binding but absent from the current identity is reported as belonging to
-an earlier release rather than as a value the operator requested.
-
-`RunState` does not store or compare one digest for the complete submission
-roster. An unseen student name is added to the file; a student absent from a
-later invocation is not noticed. Consequently, adding or removing a student can
-rewrite class-level outputs while leaving an old per-student directory behind.
-Callers must choose a new output directory whenever roster membership changes.
-
-Changing any recorded value requires a new `--out` path. A nonempty directory
-without a valid supported file is also rejected; the program does not migrate
-older output layouts. Directories whose `run_binding.json` carries
-`"schema_version": 1` — the binding file's own format version, not a release
-number — are rejected because they can contain solution dependencies and grades
-built under the earlier trust semantics; use a fresh `--out` path.
-
-`run_binding.json` verifies the assignment, settings, and values saved under
-previously recorded input names; it does not verify the complete submission
-roster or the contents of generated files. Without `--force`, `_load_or` reads a
-saved JSON file when it passes Pydantic validation. A valid manual JSON edit can
-therefore affect a later command, while an invalid or inconsistent edit may be
-normalized, rejected, or overwritten. Generated files should be treated as
-pipeline-owned resume data, not as teacher-authored source material.
-
-### Reusing or rebuilding saved results
-
-An output directory created without `--force` can reuse completed stages when
-their recorded inputs and settings remain compatible. The command name is not
-part of the binding, so a later command can extend a compatible run—for
-example, `grade` can reuse assignment work written by `inspect`. `_load_or`
-reads an existing stage artifact instead of making the corresponding model
-calls. If all requested artifacts are complete, the command needs no API key.
-
-`--force` bypasses saved results for every stage the command requests. It is a
-per-invocation switch rather than a property of the directory: it can be added
-to a directory built without it and dropped again afterwards. It does not relax
-any binding check, so rebuilding never becomes a way to adopt a changed
-assignment, teacher material, or setting.
-
-Per-problem failures do not discard successful siblings. A failed generated
-solution, transcript, or grade is stored as an unavailable result. The next
-identical run without `--force` retries failed transcript and grade entries
-while retaining successful siblings. Repairing a failed generated solution
-also regenerates every transitive dependent solution. If the replacement
-manual differs, the pipeline removes the rubric, grades, reports, summary,
-review queue, and manifest before publishing it; mappings and transcripts are
-retained. If no API key is available, the unavailable result remains and the
-manifest records the reason.
-
-If an entire student fails, grading continues for other students. Before the
-CLI exits with status `2`, the pipeline writes all available reports,
-`summary.csv`, `review_queue.md`, and `run_manifest.json`. Student reports show
-a processed subtotal when work is incomplete, while final totals remain
-unavailable.
-
-```mermaid
-sequenceDiagram
-  participant U as CLI
-  participant RS as RunState
-  participant P as Pipeline
-  participant A as Stage agents
-  participant FS as Output directory
-
-  U->>RS: open requested grading setup
-  RS->>FS: read or create run_binding.json
-  RS-->>U: accept matching setup or reject mismatch
-  U->>P: run requested command
-
-  P->>FS: look for assignment_spec.json
-  alt eligible saved result exists and --force is absent
-    FS-->>P: AssignmentSpec
-  else rebuild is required
-    P->>A: understand assignment
-    A-->>P: AssignmentSpec
-    P->>FS: replace assignment_spec.json
-  end
-
-  P->>FS: look for solutions and rubric
-  P->>A: build only missing, failed, or forced work
-  A-->>P: typed results
-  P->>FS: replace solution and rubric files
-
-  loop each student
-    P->>A: map, transcribe, and grade
-    A-->>P: student results
-    P->>FS: replace student files and report
-  end
-
-  P->>FS: replace summary, review queue, and manifest
-```
-
-### Atomic file replacement and single-process ownership
-
-Every JSON, Markdown, CSV, setup, and manifest file uses the same replacement
-protocol:
-
-1. create a sibling temporary file;
-2. write and `fsync` that temporary file; and
-3. atomically replace the destination path.
-
-This protects one destination from a torn write. It does not make an entire
-output directory transactional. The implementation does not provide directory
-`fsync`, locks between processes, concurrent-writer safety, or transactional
-recovery. Exactly one process must own an output directory.
-
-## Pipeline stages
-
-The assignment-level stages establish a common problem structure, solutions,
-and rubric. Student-level stages then locate, transcribe, and grade work against
-that shared structure.
-
-### Read the assignment
-
-`assignment.py` reads the blank assignment and produces `AssignmentSpec`: a
-tree of problems, parts, subparts, printed points, expected answer regions,
-figure regions, dependencies, and answer formats.
-
-Stable problem IDs such as `1`, `1a`, and `1a.ii` connect every later artifact.
-Only gradable leaves receive solution, rubric, mapping, transcript, and grade
-records; parent nodes preserve hierarchy and shared prompt text.
-
-The stage normalizes IDs and point information before later agents run. Printed
-points take precedence. If the assignment has neither printed problem values
-nor a printed total, each gradable leaf receives one point. If a printed total
-does not determine every weight, rubric construction requires a complete
-instructor rubric rather than guessing an equal split.
-
-### Establish solutions
-
-`solutions.py` either parses an instructor-provided answer key or generates a
-manual.
-
-A provided document is matched to assignment problems by content and checked
-for coverage and nonempty answers. This does not independently prove the
-mathematics. `--verify-provided-solutions` opts supplied entries into the
-evaluator step. Missing entries are generated with the same solver/evaluator
-process unless `--strict-solutions` requests an error. A generated answer that
-still fails evaluation remains unverified and sends dependent grades to
-review. A dependent solution is verified only when its own evaluator or
-trusted-source check succeeds and every prerequisite solution is verified.
-Unverified prerequisite drafts are shown to agents as advisory material, not
-official results, and they force dependent grades into review.
-
-`Solution.verified` is provenance-sensitive: generated answers require
-evaluator success, while supplied answers normally require successful problem
-matching. In both cases, a dependent solution is verified only when every
-prerequisite solution is verified. With `--verify-provided-solutions`, a
-negative evaluator verdict clears the status; an evaluator infrastructure
-failure records an issue and preserves the prior matching status.
-
-An infrastructure failure does not change the supplied entry's saved status,
-so dependent grades are not queued for this reason. The manual has no separate
-status for “check unavailable,” and loading it does not retry the requested
-check. The CLI calls out a failure observed during the current invocation. A
-caller that needs the independent check must either review the answer manually
-or resolve the failure and build the manual in a new output directory.
-
-For generated work, one solver creates a solution and a separate evaluator
-re-derives and checks it. Failed checks can trigger regeneration. The
-`solution_max_rounds` configuration field allows up to 2 regeneration attempts
-after the initial solver/evaluator attempt (3 total attempts by default).
-Dependencies are arranged in topological levels, so a problem that says “use
-your answer from part (a)” receives verified prerequisite results as official
-context and unverified drafts only as advisory context. The manual records the
-sorted prerequisite IDs that make a dependent solution effectively unverified.
-
-### Build the rubric
-
-`rubric.py` parses a provided rubric or generates criteria from the assignment
-and solutions. `--rubric-prompt` adds instructor preferences while criteria are
-being generated.
-
-Code enforces the point contract after model work:
-
-- every gradable leaf has a rubric entry;
-- criteria for an accepted problem weight sum to its available points;
-- criteria that do not sum are rescaled proportionally;
-- an empty criteria list becomes one full-credit criterion;
-- generated entries filling gaps are marked; and
-- the rubric total is recomputed from the accepted problem weights.
-
-A supplied problem weight that conflicts with an explicit gradable-leaf value,
-parent total, or assignment total raises `PointAllocationError` instead of
-being normalized. When printed values do not determine each leaf's weight, a
-complete rubric must provide weights whose sums satisfy every printed total.
-
-`--strict-rubric` requests an error instead of filling a missing entry.
-
-### Locate and transcribe student work
-
-`mapping.py` compares the known assignment content with a student's entire
-submission. It does not assume that work appears on the same page as the blank
-assignment. This handles skipped parts, inserted or appended pages, continued
-work, and incorrect written labels.
-
-Each `ProblemLocation` records a status and, when work is present, page regions
-in reading order. An explicit clean `blank` has no work regions and receives a
-deterministic zero. A `blank` or `not_found` status that also carries a work
-region still receives that zero — reporting no work while pointing at the answer
-space describes where the mapper looked rather than contradicting the verdict —
-but always enters human review so a person confirms the region is empty. A clean
-`not_found` result also receives a provisional zero but always enters human
-review because the absence-of-work judgment may be wrong. An omitted record or a
-claim of work with no usable location becomes `mapping_error`; the score is
-unavailable rather than zero.
-
-`ocr.py` runs a fresh transcriber for each mapped gradable leaf. The transcriber
-receives the mapped regions, can inspect or enlarge relevant pages, and returns
-verbatim student work, a confidence value, unreadable-span count, quality
-notes, and integrity concerns. It is instructed to preserve mistakes and use
-`[illegible]` instead of inventing characters.
-
-Mapping regions and transcript crops use the same page-coordinate frame.
-Rotation-aware crop tests protect this boundary so that a mapper's rectangle
-continues to identify the intended work when the transcriber requests another
-view.
-
-### Grade and report
-
-`grading.py` grades one student and gradable leaf at a time. The agent receives
-the fixed rubric entry, official solution, transcript, mapping status, and
-image context for the student's work.
-
-Deterministic finalization then:
-
-- clamps every criterion award to its valid range;
-- fills omitted criteria with zero and records a review reason;
-- recomputes problem and student totals;
-- preserves unavailable processing results instead of converting them to zero;
-  and
-- forces human review for low grader confidence, low transcript confidence,
-  unverified solutions, doubtful readability, mapper or transcript integrity
-  signals (including deterministic-zero grades), `not_found`, `mapping_error`,
-  and processing failures.
-
-`report.py` writes the student report, class summary, and review queue from the
-finalized models. The pipeline never substitutes a processed subtotal for an
-incomplete final grade.
-
-## Agent runtime
-
-Stage modules define agent purpose and context, but `llm.py` owns one reusable
-model interaction loop. An `AgentTask` specifies the agent name, system prompt,
-initial content, Pydantic result model, optional `ToolKit`, allowed tools, token
-limit, and context label.
-
-### Structured result submission and repair
-
-Every task receives a required `submit_result` tool whose JSON schema comes
-from its Pydantic result model. A model response does not become a stage result
-until it calls that tool and validation succeeds.
-
-When validation fails, the runtime returns the specific error as a tool result
-and lets the agent repair its data. When an agent stops without submitting, the
-runtime nudges it up to two times. Turn limits and API retry handling bound the
-overall loop.
+| Model judgment | Read layout and handwriting, map work, solve/evaluate answers, propose criteria, apply academic criteria. | Correct interpretation or academic judgment. |
+| Deterministic Python | Render and bound images, validate schemas/regions/statuses, enforce points and score availability, persist/reuse artifacts, escape reports. | That a valid structured claim is factually correct. |
+| Instructor | Supply and approve source materials, inspect generated setup, resolve review items, sample results, release final grades. | Runtime consistency automatically; the software still enforces its input and output contracts. |
+
+### Assignment structure
+
+[`assignment.build_spec`](../autograder/assignment.py) gives the assignment
+agent initial pages and the document tools. The model identifies the problem
+tree, prompts, printed points, page/figure/answer regions, answer formats, and
+dependencies. Python then:
+
+- removes whitespace from IDs and deterministically renames duplicates;
+- drops unknown and self-dependencies;
+- makes every node with children a non-gradable container;
+- records the actual page count;
+- derives a total only when every leaf has printed points; and
+- rejects a result with no gradable leaves.
+
+Only leaves are graded. Their stable IDs join solutions, rubric entries,
+mapping, transcripts, and grades. The instructor must inspect
+`assignment_spec.json`; normalization makes the structure usable, but it cannot
+prove that the model found every problem or copied every prompt correctly.
+
+### Solutions
+
+[`solutions.py`](../autograder/solutions.py) either parses a supplied key or
+generates entries. A non-JSON key is visually matched to leaf IDs; successful
+matching and nonempty coverage determine its normal trust status. A teacher
+JSON key is the explicit structured-input seam: entries are loaded directly
+into `Solution` values and trusted as supplied rather than visually matched.
+Independent evaluator checks of either supplied form happen only when
+requested.
+
+Generated solutions run in dependency levels. Problems in one ready level use
+fresh solver agents in a worker pool; a separate evaluator re-derives each
+candidate. A rejection starts a fresh solver/evaluator round, up to
+`solution_max_rounds + 1` total attempts. Verified prerequisites are official
+context. Unverified prerequisites are advisory and deterministically prevent a
+dependent entry from becoming verified even if its own evaluator passes.
+
+A missing supplied entry is generated unless strict-solutions policy rejects
+the incomplete key. A generated draft whose evaluator fails is retained but
+unverified. A solver failure becomes an empty `AGENT_FAILURE` placeholder. A
+supplied-answer evaluator infrastructure failure records an issue but preserves
+the trust earned by successful content matching; a negative verdict clears the
+trust. The former is not automatically retried after the manual is cached.
+
+Verification is evidence, not proof. The instructor must approve the rendered
+solutions manual, especially every unverified entry and any independent check
+that was unavailable.
+
+### Rubric
+
+[`rubric.py`](../autograder/rubric.py) parses a supplied rubric or asks one model
+task to build rubric criteria consistently across the assignment. Missing
+entries can be generated unless strict-rubric policy rejects them.
+
+Python owns the point contract. Printed leaf points take precedence. When no
+points appear anywhere, each leaf receives one point. Otherwise an ambiguous
+allocation requires a complete instructor rubric whose leaf weights satisfy all
+printed leaf, parent, and assignment totals. Conflicts raise
+`PointAllocationError`; the model is not allowed to guess them. For an accepted
+allocation, Python drops stray entries, restores leaf order, fills empty
+criteria, makes criterion IDs unique, proportionally rescales criterion sums,
+corrects rounding drift, and recomputes the rubric total. A cached rubric is
+revalidated and normalized again before use.
+
+The instructor owns the academic policy: criteria, tolerances, alternative
+methods, and partial-credit intent must be reviewed even when their arithmetic
+is internally consistent.
+
+### Student mapping
+
+[`mapping.map_student`](../autograder/mapping.py) is one model call per student.
+It receives the stable assignment inventory without blank-assignment answer
+regions, plus full-page submission context. Removing those regions is
+intentional: a scan or export may inset and rescale the original page, making
+the blank page's percentages wrong for the submission. The mapper locates work
+by content across all student pages and returns `StudentMapping`.
+
+Python drops unknown problem IDs and out-of-range pages, adds every omitted leaf
+as `mapping_error`, and converts “work exists” statuses without a usable region
+to `mapping_error`. A `blank` or `not_found` result may retain a region that
+records where the mapper looked; it remains a deterministic zero but is routed
+to review when that region creates doubt. Clean `not_found` is also reviewed.
+A clean observed `blank` is not reviewed merely for being blank.
+
+Mapping must precede transcription because it answers a whole-submission
+question: *where is every part of this answer?* A transcriber focused on an
+expected answer box cannot reliably find continued, inserted, mislabeled, or
+out-of-order work.
+
+### Transcription
+
+[`ocr.py`](../autograder/ocr.py) runs one fresh transcriber per mapped leaf,
+using a `ThreadPoolExecutor` capped by `max_workers`. This is model-based visual
+transcription, despite the historical “OCR” name. The model sees the problem as
+context and mapped crops as evidence; it must preserve mistakes, mark
+illegible/crossed-out text, describe diagrams, and report confidence and
+integrity signals.
+
+`blank` and `not_found` short-circuit to an empty completed transcript without a
+model call. `mapping_error` becomes a failed transcript. An individual
+transcriber exception becomes a typed failed `Transcript` with empty text, zero
+confidence, and an `ArtifactFailure`; successful siblings are retained. The
+model's transcription is not corrected by Python. Low confidence remains a
+completed result and later forces review rather than becoming a processing
+failure.
+
+### Grading
+
+[`grading.py`](../autograder/grading.py) runs one grader per leaf in a second
+worker pool. It supplies the fixed rubric entry, solution, verbatim transcript,
+mapping status, first work crop, and tools for checking the submission,
+assignment, and arithmetic. The model decides which evidence satisfies each
+criterion, writes justifications and feedback, estimates confidence, and can
+request review.
+
+Python's `finalize_grade` then drops unknown or duplicate criterion scores,
+clamps each award to the criterion range, inserts every omitted criterion at
+zero with a review reason, and derives the problem total from the accepted
+criterion scores. It also forces review for intrinsic concerns such as an
+unverified solution, model/integrity flags, or mapper concern. Grader- and
+transcript-confidence comparisons are recomputed from the current thresholds
+every time a saved grade is read; they are not trusted from the JSON file.
+
+A clean `blank` or `not_found` follows a deterministic zero path and does not
+call a grader. A failed transcript or grading task yields a failed
+`ProblemGrade`: `awarded=None`, no criterion scores, and a typed failure. It is
+never silently converted to zero.
+
+### Aggregation, persistence, and reports
+
+`aggregate_student_grade` sums only complete problem grades. If every problem
+is complete, `total_awarded` is the processed sum. If any is failed,
+`score_complete` is false and `total_awarded` must be `None`; the processed
+subtotal remains available as evidence, never as a substitute final score.
+Mapping, transcript, and grader integrity signals are collected into the
+student flags.
+
+[`report.py`](../autograder/report.py) deterministically writes the student
+report, class summary, human review queue, and command manifest. `run_grade`
+writes all available class outputs before raising `PartialGradeFailure` when a
+student failed entirely or any final score is incomplete. The CLI maps that
+partial outcome to status 2; ordinary startup or stage failures map to status 1.
+Exact status and output fields are maintained in
+[Reference](reference.md#statuses-and-score-availability).
+
+The instructor is the final boundary. A review queue routes concerns; it does
+not adjudicate them. Instructors must resolve every unavailable or flagged
+result, sample unflagged work, and approve grades before release.
+
+## Typed results and status semantics
+
+[`models.py`](../autograder/models.py) is both the in-memory vocabulary and the
+on-disk schema layer. Its models are used for `submit_result` JSON Schema,
+Pydantic validation, stage handoffs, resume files, and report input. Extra
+fields are forbidden throughout the artifact model family.
+
+The core chain is:
+
+`AssignmentSpec` → `SolutionsManual` → `Rubric` → `StudentMapping` →
+`dict[str, Transcript]` → `StudentGrade`.
+
+`Region` is the visual handoff type. It uses a 1-based page and
+`[x0, y0, x1, y1]` percentages in a declared 0/90/180/270-degree view frame.
+Its validator sorts reversed corners, clamps ordinary rounding slop within two
+percentage points of the page, and rejects values farther outside 0–100 so a
+pixel-valued box enters the schema-repair loop instead of becoming a plausible
+empty sliver. Stage normalization separately rejects pages outside the actual
+submission. Rendering also pads a crop dimension narrower than 1.5 percent to
+avoid a degenerate image.
+
+Two status dimensions must remain separate:
+
+- `WorkStatus` records the mapper's observation about the answer: answered,
+  partial, blank, not found, mapping error, and related locations.
+- `ProcessingStatus` records whether a transcript or grade was produced:
+  `complete` or `failed`.
+
+Model validators enforce that a complete transcript has no failure, while a
+failed transcript has a failure, empty text, and zero confidence. A complete
+problem grade has a numeric award and no failure; a failed grade has a failure,
+no award, and no criterion scores. `StudentGrade` enforces that
+`score_complete` agrees exactly with whether `total_awarded` is available.
+
+This is why “the student earned zero,” “the model was uncertain,” and “the
+pipeline could not score the answer” remain distinct in JSON, Markdown, CSV,
+retry logic, and exit status.
+
+## Persistence, resume, and invalidation
+
+The exact artifact tree is maintained in
+[Reference](reference.md#output-tree-and-artifacts). Contributors need to know
+the rules behind it.
+
+### Run binding comes before reuse
+
+`RunState.open` creates strict schema-version-2 `run_binding.json` only in an
+empty output directory. It binds the directory to the assignment SHA-256 and
+the exact `RunConfig.cache_identity()` object. Command-level methods then bind
+the first value seen for the supplied/generated solutions, supplied/generated
+rubric, rubric-prompt digest or `none`, and each encountered
+`submission:<slug>` digest. Student file digests include ordered filenames and
+contents because file order is page order.
+
+An existing directory must contain a readable, valid version-2 binding with an
+identical assignment and cache identity; unsupported versions, malformed
+bindings, and mismatches stop before reuse and require a fresh output path.
+Configuration mismatch errors name the differing fields.
+
+Assignment directories are hashed over exactly the direct supported files that
+`Document.from_path` will ingest. Before an optional teacher document, raw
+submission path, or discovered student file is bound or opened, the pipeline
+also rejects an output path equal to, inside, or containing that input.
+
+`cache_identity()` excludes the API key and execution-only choices: worker
+count, prompt caching, verbosity, and `force`. It also excludes the two review
+thresholds because their comparisons are deterministically re-derived on every
+grade read. The authoritative field-by-field binding table is
+[Reference](reference.md#runconfig-reference).
+
+The command name is not bound. A later command can extend a compatible earlier
+one—for example, `grade` can reuse `assignment_spec.json` from `inspect` and
+then add teacher/student input bindings. The binding is incremental, not a
+complete roster identity: it can add a previously unseen student and does not
+notice a student omitted later. A roster change therefore requires a fresh
+output directory even though the current implementation cannot reliably reject
+it.
+
+### Reuse is conditional validation, not a content-addressed graph
+
+Without `--force`, `_load_or` reuses a stage file only when it exists and
+validates as the requested Pydantic model. Missing or invalid JSON rebuilds that
+stage. A valid generated file is not hashed into `run_binding.json`, and most
+cross-artifact semantic relationships are not re-proved on load. A syntactically
+valid hand edit can therefore be consumed; another edit may be normalized,
+rejected, overwritten, or leave stages inconsistent. Cached rubrics receive the
+stronger point-invariant revalidation described above, but this is not a general
+integrity system. Generated files are pipeline-owned resume state, not a
+supported teacher-input interface.
+
+The tool version is recorded in `run_manifest.json`, not in the run binding.
+An upgrade can therefore reuse compatible artifacts unless the caller chooses
+to rebuild them.
+
+### Failure retry and dependency invalidation are targeted
 
 ```mermaid
 flowchart TD
-  TASK["AgentTask"] --> SCHEMA["Pydantic result model<br/>JSON Schema"]
-  TASK --> TOOLS["Allowed ToolKit methods"]
-  SCHEMA --> SUBMIT["submit_result tool"]
-  TOOLS --> API["Anthropic messages.create"]
-  SUBMIT --> API
-
-  API --> RESPONSE["Assistant response"]
-  RESPONSE --> HAS_TOOL{"Tool calls?"}
-
-  HAS_TOOL -- no --> NUDGE["Nudge or stop with an error"]
-  NUDGE --> API
-
-  HAS_TOOL -- yes --> TOOLTYPE{"submit_result?"}
-  TOOLTYPE -- no --> DISPATCH["ToolKit.dispatch"]
-  DISPATCH --> API
-
-  TOOLTYPE -- yes --> VALIDATE["Pydantic validation"]
-  VALIDATE -- failed --> REPAIR["Return validation error"]
-  REPAIR --> API
-  VALIDATE -- passed --> RESULT["Typed result returned"]
+  LOAD["Load saved stage"] --> VALID{"Pydantic-valid and<br/>--force absent?"}
+  VALID -- no --> REBUILD["Rebuild stage reached by this command"]
+  VALID -- yes --> FAILED{"Retryable failed entries?"}
+  FAILED -- no --> REUSE["Reuse completed result"]
+  FAILED -- yes --> KEY{"API key available in RunConfig?"}
+  KEY -- no --> KEEP["Keep flagged unavailable entries"]
+  KEY -- yes --> RETRY["Retry failed IDs; keep successful siblings"]
+  RETRY --> SOLCHG{"Cached solution manual changed?"}
+  SOLCHG -- yes --> INVALIDATE["Delete rubric, grades, reports,<br/>class outputs, and manifest"]
+  SOLCHG -- no --> SAVE["Atomically replace repaired artifact"]
+  INVALIDATE --> SAVE
 ```
 
-### Prompt caching and image eviction
+A cached solution whose verifier notes start with `AGENT_FAILURE` is retried
+with every transitive dependent solution. If that repaired manual changes,
+`_invalidate_solution_dependents` deletes the rubric, per-student grades and
+reports, summary, review queue, and manifest before the repaired manual is
+published. Mappings and transcripts remain because they depend on assignment
+and submission content, not solution correctness.
 
-The runtime adds prompt-cache breakpoints after the tool/system prefix and on
-the most recent user block. As a multi-turn conversation grows, prior content
-can be read from Anthropic's prompt cache rather than billed as entirely new
-input on each turn. `--no-prompt-caching` disables those breakpoints.
+Cached failed transcripts and problem grades are retried only for their failed
+IDs, then merged with completed siblings and re-aggregated. With no API key in
+`RunConfig`, flagged placeholders remain and the manifest records a warning.
+An unverified generated solution that exhausted evaluator rounds is complete,
+not an `AGENT_FAILURE`, so ordinary resume does not regenerate it.
 
-Tool calls can add many images to a conversation, and every later request would
-otherwise resend all of them. The `max_tool_images` configuration field
-controls how many tool-result images one agent retains (20 by default). When
-the conversation exceeds that limit, the runtime replaces the oldest results
-with a text placeholder. Initial page context is retained, and the agent can
-request an evicted view again.
+`--force` bypasses `_load_or` for every stage reached by the chosen public
+entry point. It never relaxes assignment, configuration, or input binding. It
+is not recursive invalidation: the explicit dependent-deletion helper above is
+called only when repair changes an already loaded failed solution manual. For
+example, forced `grade` rebuilds its entire reached path, but forced `solve`
+does not itself delete old rubric or student artifacts that lie beyond the
+`run_solve` path. Contributors must not treat the output directory as a generic
+dependency-graph cache.
 
-Thinking mode, effort, token limits, usage accounting, schema repair, tool
-dispatch, and image replacement are centralized here so stage modules do not
-develop incompatible API behavior.
+### Atomic replacement is per file
 
-## Data model
+Every generated JSON, Markdown, CSV, binding, and manifest write goes through
+`atomic_write_text`/`atomic_write_bytes` in
+[`run_state.py`](../autograder/run_state.py): create a sibling temporary file,
+write and flush it, `fsync` the file, then `os.replace` the destination. A
+failed replacement cleans up its temporary file.
 
-The core Pydantic models serve both as in-process types and as the schemas for
-JSON artifacts. Relationships that matter across the pipeline are shown below.
+This prevents a torn replacement of one destination. It does not provide
+directory `fsync`, an output-directory transaction, rollback, process locking,
+or concurrent-writer safety. Exactly one process must own an output directory.
 
-```mermaid
-classDiagram
-  class AssignmentSpec {
-    title
-    total_points
-    problems
-    leaves()
-    leaf_ids()
-    stem_text(pid)
-  }
+## Failure boundaries and degradation
 
-  class Problem {
-    id
-    label
-    prompt
-    type
-    points
-    pages
-    answer_region
-    figure_refs
-    depends_on
-    children
-  }
+Failure handling preserves paid sibling work without pretending a missing
+judgment is a score:
 
-  class SolutionsManual {
-    assignment_title
-    solutions
-  }
+| Failure location | Runtime behavior |
+|---|---|
+| Binding, ingestion, assignment structure, or rubric setup | The command fails; later stages do not run. |
+| One generated solution | Store an unverified retry marker; continue its level and solve dependents with advisory trust. |
+| Generated-solution evaluator after a draft exists | Keep the draft unverified; do not lose it. |
+| One transcription | Store a failed transcript; continue sibling transcriptions. |
+| One grading task | Store an unavailable failed grade; continue sibling grades. |
+| Whole student mapping or other student-level exception | Record a `StudentFailure`; continue later students. |
+| Any unavailable problem or failed student at completion | Write available reports/class outputs and a `partial_failure` manifest, then raise `PartialGradeFailure`. |
 
-  class Solution {
-    problem_id
-    reasoning
-    final_answer
-    verified
-    unverified_dependencies
-    provenance
-    rounds
-  }
+The current orchestration is sequential across students, so a whole-student
+failure is isolated without nested roster concurrency. Within solution levels,
+provided-solution verification, transcription, and grading, worker pools are
+capped by `max_workers`. `UsageMeter` and `Document` locking make their shared
+state thread-safe.
 
-  class Rubric {
-    title
-    total_points
-    problems
-  }
+## Security boundaries
 
-  class RubricProblem {
-    problem_id
-    points
-    criteria
-    grading_notes
-  }
+The system handles student-authored text and potentially hostile documents.
+These controls are deterministic boundaries, not claims that model prompting is
+an absolute sandbox:
 
-  class ProcessingStatus {
-    <<enumeration>>
-    complete
-    failed
-  }
+- Mapping, transcription, and grading append `UNTRUSTED_CONTENT_NOTE`: document
+  text is data, embedded instructions must not be followed, and suspicious
+  instructions are recorded in integrity flags. The instructor must investigate
+  those flags; prompt-injection signaling does not prove every attack was
+  resisted.
+- `compute` never calls Python `eval`. `config.safe_eval` walks an allowlisted
+  numeric AST, permits selected math functions/constants, and bounds exponents,
+  large integers, and expensive combinatoric arguments. Names, attributes,
+  imports, keyword arguments, and nonnumeric literals are rejected.
+- Raster header dimensions are checked before full decoding, and render scale,
+  output pixels, zoom upscale, JPEG attempts, agent turns, initial page counts,
+  and retained tool images are bounded.
+- `slugify` restricts student artifact directory names and strips leading dots,
+  preventing names such as `..` from escaping the `students` directory.
+- Output/input overlap checks prevent generated files from being rediscovered as
+  assignments, teacher material, or submissions.
+- `markdown_text` HTML-escapes `<`, `>`, and `&`, backslash-escapes Markdown
+  punctuation, and renders NUL visibly as `\\x00`. Student/model strings remain
+  inert report data rather than headings, links, HTML, or hidden binary-looking
+  content.
+- `csv_text` examines the first non-whitespace, non-control character and
+  prefixes formula-capable text (`=`, `+`, `-`, or `@`) with an apostrophe. It
+  also renders NUL as `\\x00`. Numeric score cells stay numeric.
 
-  class ArtifactFailure {
-    stage
-    message
-    retryable
-  }
+Markdown and CSV escaping protect generated reports. They do not sanitize the
+original source files or authorize publishing student data; operational privacy
+controls remain the instructor's responsibility.
 
-  class ProblemLocation {
-    status
-    regions
-    label_seen
-    note
-  }
+## Module ownership map
 
-  class StudentMapping {
-    page_count
-    problems
-    extra_pages
-    unmatched_work
-    integrity_flags
-  }
+| Module | Owns |
+|---|---|
+| [`cli.py`](../autograder/cli.py) | Command parsing, environment key lookup, entry-point dispatch, exit codes. |
+| [`config.py`](../autograder/config.py) | `RunConfig`, cache identity, input hashes, safe numeric AST, slugs, natural ordering. |
+| [`orchestrator.py`](../autograder/orchestrator.py) | Public `Pipeline`, runtime stage order, reuse/retry, student isolation, dependency invalidation, final manifest timing. |
+| [`run_state.py`](../autograder/run_state.py) | Output/input separation, schema-versioned run binding, atomic file replacement. |
+| [`ingest.py`](../autograder/ingest.py) | Source discovery as documents, page/text access, rendering/cropping/rotation, image resource bounds, submission discovery. |
+| [`tools.py`](../autograder/tools.py) | Anthropic content blocks, inline-page selection, tool JSON schemas and dispatch. |
+| [`llm.py`](../autograder/llm.py) | Anthropic client, Messages tool loop, structured submission/repair, caching, image eviction, usage meter. |
+| [`models.py`](../autograder/models.py) | Typed stage and artifact schemas, region/status/score availability validators. |
+| [`assignment.py`](../autograder/assignment.py) | Assignment-analysis prompt, `AssignmentSpec` normalization, downstream problem digests. |
+| [`solutions.py`](../autograder/solutions.py) | Key parsing, solver/evaluator loop, dependency trust/scheduling, solution manual rendering. |
+| [`rubric.py`](../autograder/rubric.py) | Rubric parsing/generation, point allocation invariants, cached-rubric revalidation, rubric rendering. |
+| [`mapping.py`](../autograder/mapping.py) | Whole-submission mapping prompt and deterministic mapping normalization. |
+| [`ocr.py`](../autograder/ocr.py) | Per-leaf visual transcription, short circuits, concurrent degradation to typed failures. |
+| [`grading.py`](../autograder/grading.py) | Per-leaf rubric judgment, deterministic score/review finalization, student aggregation. |
+| [`report.py`](../autograder/report.py) | Safe Markdown/CSV encoding and student, class, review, and manifest writers. |
 
-  class Transcript {
-    problem_id
-    text
-    confidence
-    illegible_spans
-    integrity_flags
-    processing_status
-    Optional~ArtifactFailure~ failure
-  }
+Prompts live beside their owning stage rather than in a shared prompt module;
+the calculator lives in `config.py` and is exposed by `tools.py`. Contributors
+should change the owner that enforces the boundary, not copy behavior into the
+orchestrator.
 
-  class ProblemGrade {
-    problem_id
-    status
-    Optional~float~ awarded
-    possible
-    criteria
-    processing_status
-    Optional~ArtifactFailure~ failure
-  }
+## Supported programmatic entry point
 
-  class StudentGrade {
-    student_id
-    Optional~float~ total_awarded
-    total_possible
-    processed_awarded
-    processed_possible
-    score_complete
-    problems
-    flags
-  }
-
-  AssignmentSpec "1" --> "*" Problem
-  SolutionsManual "1" --> "*" Solution
-  Rubric "1" --> "*" RubricProblem
-  StudentMapping "1" --> "*" ProblemLocation
-  StudentGrade "1" --> "*" ProblemGrade
-  Transcript "1" --> "1" ProcessingStatus : processing_status
-  Transcript "1" --> "0..1" ArtifactFailure : failure
-  ProblemGrade "1" --> "1" ProcessingStatus : processing_status
-  ProblemGrade "1" --> "0..1" ArtifactFailure : failure
-```
-
-`AssignmentSpec` is the root of the domain graph. `SolutionsManual` and
-`Rubric` must cover its gradable leaves. A `StudentMapping` connects those IDs
-to one submission, `Transcript` records the observed student work, and
-`StudentGrade` contains finalized scores and review state.
-
-`ProcessingStatus` and `ArtifactFailure` distinguish “the student earned zero”
-from “the system could not produce a score.” That distinction propagates into
-reports, summary fields, retries, and the process exit status.
-
-## Programmatic integration
-
-The CLI is a wrapper around `autograder.orchestrator.Pipeline`. An application
-can construct the same configuration and call a command-level entry point
-directly. Call exactly one public `run_*` method on a `Pipeline` instance. Every
-`run_*` method releases the assignment document on the way out, including when it
-raises, so callers do not have to close it themselves. `Pipeline.close()` is
-public and idempotent if a caller wants to be explicit.
+The supported embedding seam is a fresh `Pipeline` followed by exactly one
+public command-level `run_*` method. Populate the API key explicitly when the
+call might need model work; it is neither saved in the run binding nor written
+to the manifest.
 
 ```python
 import os
@@ -735,25 +580,19 @@ from pathlib import Path
 from autograder.config import RunConfig
 from autograder.orchestrator import PartialGradeFailure, Pipeline
 
-config = RunConfig(
-    model="claude-sonnet-5",
-    api_key=os.environ.get("ANTHROPIC_API_KEY"),
-    max_workers=4,
-    thinking="on",
-    review_confidence=0.6,
-    ocr_review_threshold=0.5,
-)
+api_key = os.environ.get("ANTHROPIC_API_KEY")
+if not api_key:
+    raise RuntimeError("Set ANTHROPIC_API_KEY before starting a run that may call the model")
 
 pipeline = Pipeline(
-    config,
-    assignment_path=Path("hw3.pdf"),
+    RunConfig(api_key=api_key),
+    assignment_path=Path("assignments/hw3.pdf"),
     out_dir=Path("runs/hw3"),
 )
 
-failures = []
 try:
     grades = pipeline.run_grade(
-        submission_paths=[Path("submissions/")],
+        submission_paths=[Path("submissions/hw3")],
         solutions_path=None,
         rubric_path=None,
         steer=None,
@@ -763,97 +602,41 @@ except PartialGradeFailure as exc:
     failures = exc.failures
 ```
 
-On complete runs, each public method returns typed Pydantic models and writes
-the same artifacts used by the corresponding CLI command. `run_grade` writes
-all available class outputs and then raises `PartialGradeFailure` when a student
-failed or any final score is incomplete. Its `grades` and `failures` attributes
-expose those available results, as the example shows.
-
-Every entry point applies the same grading-setup checks and persistence rules;
-embedding the pipeline does not bypass output-directory safety. Create a fresh
-`Pipeline` instance before calling another command-level method.
-
-### Advanced `RunConfig` values
-
-The following fields are not exposed directly as command options. Programmatic
-callers may override them when constructing `RunConfig`.
-
-| Field | Default | Meaning |
-|---|---|---|
-| `max_agent_turns` | `480` | Maximum turns before one agent is stopped. |
-| `max_tokens` / `big_max_tokens` | `32768` | Standard and large-payload output-token limits. `--max-tokens` raises both in the CLI. |
-| `max_tool_images` | `20` | Tool-result images retained before the oldest are replaced; initial page context remains. |
-| `solution_max_rounds` | `2` | Solver/evaluator regeneration rounds before a solution remains unverified. |
-| `inline_page_cap` | `12` | Pages included directly in an agent's initial message. |
-| `inline_page_edge` | `1100` | Long-edge pixels for a normal page view. |
-| `detail_page_edge` | `1568` | Long-edge pixels for a high-detail page view. |
-| `zoom_target_edge` | `1500` | Target long-edge pixels for a cropped view. |
-| `max_upscale` | `4.0` | Maximum enlargement factor for raster crops. |
-| `max_source_pixels` | `40_000_000` | Maximum accepted raster source pixels, checked from the header before full decode. |
-| `max_pixels` | `3_400_000` | Maximum rendered pixels in one image. |
+All public entry points apply the same binding, persistence, and document
+cleanup behavior as the CLI. `run_grade` returns `list[StudentGrade]` when
+complete; on partial completion, the exception exposes available `grades` and
+whole-student `failures`. A fully cached invocation can use `api_key=None`, but
+the caller must accept that a missing or failed artifact then cannot make model
+progress. Construct a new `Pipeline` before invoking another command-level
+method.
 
 ## Testing the architecture
 
-The offline test suite uses synthetic documents and scripted model clients, so
-it needs no API key or network access. Tests are grouped by boundary:
-document ingestion and tools, the agent loop, pipeline rules, failure/resume
-behavior, output-directory consistency, generated reports, CLI behavior, and
-documentation contracts.
+The suite is offline: synthetic PDFs/images and scripted Anthropic clients run
+through the production schemas and loops without a network call. Use the
+focused tests by boundary:
 
-```bash
-python -m pip install -e . pytest
-python -m pytest tests/ -q
-```
+- `tests/test_ingest_tools.py` for page rendering, crops, rotation, pixel guards,
+  mixed documents, locks, and tool behavior;
+- `tests/test_llm_models.py` and `tests/test_caching_and_staleness.py` for the
+  Messages loop, validation repair, stop reasons, SDK parameters, prompt cache,
+  image eviction, metering, and binding identity;
+- `tests/test_pipeline_units.py`, `tests/test_points_per_page.py`, and
+  `tests/test_failures_and_resume.py` for stage invariants, solution trust,
+  scoring, review, concurrency degradation, retry, and invalidation;
+- `tests/test_run_state.py` and `tests/test_input_output_guards.py` for binding,
+  atomic replacement, and path boundaries; and
+- `tests/test_documentation.py` for maintained links and canonical reference
+  contracts.
 
-When changing a boundary, test both its local rule and the handoff to the next
-layer. Examples include region coordinates from mapping to transcription,
-unavailable scores from grading to reports, and configuration identity from
-`RunConfig` to `RunState`.
+When changing a boundary, test the local rule and the next handoff: rotated
+mapper coordinates into transcription, typed failures into score availability,
+rubric criteria into deterministic grade totals, and `RunConfig.cache_identity`
+into `RunState`. End-to-end tests should script real `submit_result` tool calls,
+not bypass production Pydantic validation.
 
-The end-to-end tests use scripted clients instead of weakening production
-validation. A test response must satisfy the same Pydantic schema, repair loop,
-score finalization, and persistence behavior as a real model response.
-
-## Design decisions
-
-### Stable problem identifiers instead of page assumptions
-
-The blank assignment is converted once into an `AssignmentSpec` with stable
-gradable-leaf IDs. Every later stage uses those IDs. Student work is located by
-content, so an inserted page, appended sheet, continued answer, or incorrect
-written label does not shift the meaning of every later page.
-
-This adds an explicit mapping stage, but it prevents page position from becoming
-a hidden cross-stage dependency.
-
-### Model judgment followed by deterministic rules
-
-Models interpret layout, solve problems, transcribe handwriting, and apply
-rubric criteria. Code then enforces rules that should not vary by model
-judgment: valid IDs and regions, point totals, criterion bounds, blank and
-no-work handling, unavailable processing results, final totals, and mandatory
-review triggers.
-
-This split makes model uncertainty visible without letting it redefine the
-grading contract.
-
-### Inspectable generated files
-
-Artifacts are plain JSON, Markdown, and CSV so instructors can inspect them and
-contributors can reproduce stage behavior. `run_binding.json` rejects changes
-to values it has already recorded; it does not detect removal of a student from
-the roster. `run_manifest.json` records the tool version, selected run
-configuration, input hashes, issues, and usage for the current command
-invocation.
-
-Some JSON artifacts are also resume inputs. A matching `run_binding.json`
-protects recorded external-input values and settings; as described above, it
-does not record the complete roster or hash generated files. Contributors must
-not assume that a matching file also proves roster identity or artifact
-integrity.
-
-Manual edits are unsupported because their treatment depends on the stage and
-content: a later command may reuse, normalize, reject, or overwrite them. An
-instructor should supply revised material as a source file through
-`--solutions` or `--rubric` and start a new output directory. That workflow
-keeps accepted teacher inputs explicit and reviewable.
+The architecture deliberately pays for explicit seams: mapping before
+transcription prevents page position from becoming hidden identity; structured
+outputs make shape and availability enforceable; deterministic Python rules
+keep totals, bounds, resume, and reporting stable; and human review owns the
+academic judgment that neither schemas nor model confidence can guarantee.
