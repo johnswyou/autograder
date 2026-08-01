@@ -124,16 +124,22 @@ Tool failures are returned as error tool results so the model can recover. An
 unexpected dispatcher exception is also converted to an error block rather
 than crashing the agent loop.
 
-Initial and stage-specific image selection is intentionally bounded:
+Initial and stage-specific visual-image selection is intentionally bounded:
 
-- assignment inspection, submission mapping, and document parsers inline at
-  most `inline_page_cap` pages;
+- assignment inspection, visual submission mapping, and visual document
+  parsers inline at most `inline_page_cap` page images;
 - a solution task includes at most four referenced-figure crops and two visual
   assignment pages (or three text chunks);
 - a transcription task initially includes at most eight mapped crops (or six
   text chunks); and
 - a grading task initially includes only the first mapped crop and tells the
   grader to fetch the remaining regions with tools.
+
+Text submission mapping is the deliberate exception to the initial-page cap.
+Markdown and LaTeX become pseudo-pages through `_chunk_text`, and the mapper
+appends every nonempty pseudo-page to its initial message. Their count is
+therefore governed by source size and chunking, not `inline_page_cap`; an
+oversized text submission can instead exhaust the model context window.
 
 Every rendered image also obeys `max_pixels`; raster sources obey
 `max_source_pixels`; raster zooms obey `max_upscale`. The canonical defaults are
@@ -523,8 +529,9 @@ an absolute sandbox:
   large integers, and expensive combinatoric arguments. Names, attributes,
   imports, keyword arguments, and nonnumeric literals are rejected.
 - Raster header dimensions are checked before full decoding, and render scale,
-  output pixels, zoom upscale, JPEG attempts, agent turns, initial page counts,
-  and retained tool images are bounded.
+  output pixels, zoom upscale, JPEG attempts, agent turns, initial visual-page
+  images, and retained tool images are bounded. This is not a text-input-size
+  bound: mapping appends every Markdown/LaTeX pseudo-page as described above.
 - `slugify` restricts student artifact directory names and strips leading dots,
   preventing names such as `..` from escaping the `students` directory.
 - Output/input overlap checks prevent generated files from being rediscovered as
