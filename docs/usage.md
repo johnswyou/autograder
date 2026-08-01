@@ -1,864 +1,453 @@
-# Usage Guide
+# Usage
 
-This guide is the day-to-day manual for instructors and operators. It explains
-how to prepare inputs, choose a command, review results, resume interrupted
-work, and change an answer key or rubric safely.
+Use this guide when you understand the basic pipeline and need to make a real
+grading decision. If the stages are unfamiliar, read [How it works](how-it-works.md)
+first. For exact command syntax, accepted JSON shapes, defaults, and artifact
+fields, use the [Reference](reference.md).
 
-For a shorter introduction, read the [project README](../README.md). For module
-boundaries and extension points, see the
-[architecture guide](architecture.md).
+The autograder produces recommendations and review evidence. It does not
+release grades. You remain responsible for the final decision.
 
-- [Start here](#start-here)
-- [Install and configure the autograder](#install-and-configure-the-autograder)
-- [Prepare your inputs](#prepare-your-inputs)
-- [Choose a command](#choose-a-command)
-- [Run and review a grading job](#run-and-review-a-grading-job)
-- [Provide or revise an answer key](#provide-or-revise-an-answer-key)
-- [Provide or revise a rubric](#provide-or-revise-a-rubric)
-- [Resume or change a grading job](#resume-or-change-a-grading-job)
-- [Command option reference](#command-option-reference)
-- [Models, cost, and performance](#models-cost-and-performance)
-- [Protect student data and handle untrusted content](#protect-student-data-and-handle-untrusted-content)
-- [Troubleshooting](#troubleshooting)
-- [Current limitations](#current-limitations)
+## Plan the run before spending money
 
-## Start here
+**Choose the assignment, roster, grading policy, model settings, and output
+directory before the first command.** The output directory is bound to most of
+those choices; changing one later usually means starting a new directory.
 
-Agentic Autograder turns a blank physics or mathematics assignment and a set of
-student submissions into:
+Use one of four commands according to how far you are ready to proceed:
 
-- one detailed report per student;
-- a class summary in CSV format; and
-- a review queue for uncertain, incomplete, or failed results.
+- `inspect` saves the assignment structure only. Start here for a real
+  assignment so a bad problem inventory does not flow into paid downstream
+  work.
+- `solve` also creates or checks the solutions manual. Use it when solutions
+  need instructor approval before rubric work.
+- `rubric` also creates or checks scoring criteria. Use it when the rubric
+  needs approval before student data is processed.
+- `grade` runs every required stage and requires submissions. It can extend a
+  compatible earlier run in the same output directory.
 
-An answer key and rubric are optional. The program can generate them, or it can
-check and use materials supplied by an instructor.
-
-```mermaid
-flowchart LR
-    A["Blank assignment"] --> J["Grading job"]
-    S["Student submissions"] --> J
-    K["Optional answer key"] --> J
-    R["Optional rubric"] --> J
-    J --> P["Student reports"]
-    J --> C["Class summary"]
-    J --> Q["Human review queue"]
-```
-
-> **Human oversight is required.** The autograder produces transcriptions,
-> solutions, and grades automatically, but model outputs can be wrong. Before
-> returning grades to students, instructors must review every queued item,
-> inspect a sample of results that were not sent to the queue, and approve the
-> final grades.
-
-> **Student data is sent to Anthropic, and model calls cost money.** Stages that
-> need a model send assignment pages and student submissions to the Anthropic
-> API and incur API charges. Confirm that your institution permits this use
-> before grading real student work.
-
-> **Grading output holds student data too.** The directory you pass to `--out`
-> records student names, transcribed handwriting, and the path of every input
-> file. Protect it the same way you protect the original submissions, and keep
-> it out of public repositories and shared folders.
-
-To try the workflow without real student data, generate the repository's
-synthetic, typeset example:
+For example, the synthetic assignment used in [Getting started](getting-started.md)
+can be inspected and then extended to a full run:
 
 ```bash
-python examples/generate_sample.py
+autograder inspect \
+    --assignment examples/sample/sample_assignment.pdf \
+    --out runs/sample-demo
 
 autograder grade \
     --assignment examples/sample/sample_assignment.pdf \
     --submissions examples/sample/submissions \
-    --out runs/demo
+    --out runs/sample-demo
 ```
 
-The example demonstrates document ingestion and matching work to problems. It
-does not test handwriting recognition or OCR accuracy.
+The second command reuses the saved assignment structure because its input and
+settings match. A completed repeat can reuse every requested result without an
+API key or another model call.
 
-## Install and configure the autograder
+Keep `--out` separate from every input. It must not equal, contain, or be
+contained by the assignment, solutions, rubric, or any submission path. In
+particular, never put it inside the submissions directory. An existing
+nonempty directory without a supported `run_binding.json` cannot be adopted.
 
-You need Python 3.10 or newer and an Anthropic API key.
+Commands that make model calls send content to Anthropic and incur API charges.
+Confirm the data policy and cost boundary before using real student work; see
+[Protect student data at the point of use](#protect-student-data-at-the-point-of-use).
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-export ANTHROPIC_API_KEY="..."
-```
+## Prepare inputs and preserve student identity
 
-On Windows PowerShell, activate the environment with:
+**Arrange files so each discovered submission corresponds to exactly one
+student.** The filename or directory name becomes the student ID; the program
+does not infer identity from page contents. Changing those names later changes
+the roster and requires a new output directory.
 
-```powershell
-.venv\Scripts\Activate.ps1
-```
+The assignment, solutions, rubric, and submissions accept PDF, PNG, JPEG,
+Markdown, and LaTeX sources as applicable. A blank assignment may be one file
+or a directory of supported files. Use the copy that contains the questions
+and printed point values, not an answer key or a completed submission.
 
-Installation adds the `autograder` command. You can pass an API key directly
-with `--api-key` instead of setting `ANTHROPIC_API_KEY`. The program never
-writes the key to its output directory.
+Submission discovery follows these rules:
 
-A repeated command needs no API key when every requested result can be reused
-and no model call is necessary.
+- A supplied file is one student, identified by the file stem.
+- Supported files directly inside a supplied directory are separate students.
+- Each immediate subdirectory is one student; its supported files are combined
+  into a multi-file submission.
+- If a directory contains both supported files and student subdirectories,
+  both kinds become students. Remove stray files before running.
+- Files for one student are combined in natural filename order, so `page2.jpg`
+  precedes `page10.jpg`. PDFs and images may be mixed.
+- A Markdown or LaTeX submission must be that student's only file. Convert it
+  to PDF before combining it with another file.
 
-> **PyMuPDF licensing:** PyMuPDF offers AGPL and commercial licensing options.
-> Confirm that the option you use is appropriate before distributing or
-> deploying the project.
+IDs that would map to the same safe output folder receive suffixes such as
+`_2`. Avoid relying on that recovery rule: make roster names unique and stable
+before grading, and compare the discovered names printed by the command with
+your authoritative roster.
 
-## Prepare your inputs
+Each standalone raster source is limited to 40,000,000 pixels and is rejected
+from its header before full decode or EXIF handling. Resize an oversized photo
+before grading. EXIF orientation is honored for accepted images. The separate
+3,400,000-pixel cap applies to each page view or crop sent to a model; zoom can
+expose existing detail but cannot recover detail absent from a blurry scan.
 
-The program accepts the following source formats:
+## Inspect the assignment before grading
 
-| Format | Extensions | How it is read |
-|---|---|---|
-| PDF | `.pdf` | Pages are rendered as images. An embedded text layer, when present, helps recover exact typeset wording. |
-| Image | `.png`, `.jpg`, `.jpeg` | Each image is one page. EXIF orientation is honored, and an agent can rotate a page when needed. |
-| Text | `.md`, `.markdown`, `.tex` | The source is divided into page-like chunks. |
-
-Raster source images may have at most 40,000,000 pixels. The program reads the
-dimensions from the header and rejects a larger image before EXIF handling or a
-full decode. Resize oversized photos before grading. This source acceptance
-limit is separate from the 3,400,000-pixel limit on each rendered page or crop
-provided to an agent.
-
-### Blank assignment
-
-Pass one blank assignment with `--assignment` or `-a`. It may be a supported
-file or a directory of supported files. Use the copy containing the questions
-and printed point values, not an answer key or a student's completed copy.
-
-The first stage identifies each problem and lowest-level subproblem. Later
-stages use those identifiers to connect solutions, rubric criteria, located
-student work, transcripts, and grades.
-
-### Student submissions
-
-The `grade` command requires one or more paths after `--submissions` or `-S`.
-Each path is discovered as follows:
-
-| Path supplied | Students created |
-|---|---|
-| One supported file | One student whose ID is the filename without its extension. |
-| A directory of supported files | One student per file. |
-| A directory of subdirectories | One student per subdirectory; files inside it become that student's pages. |
-| A directory containing both files and subdirectories | Both are treated as students. Remove stray files to avoid accidental entries. |
-
-Files belonging to one student are combined in natural filename order, so
-`page2.jpg` comes before `page10.jpg`. PDFs and images may be combined. A
-Markdown or LaTeX submission must be the student's only file.
-
-Student IDs come from filenames and directory names; the program does not read
-names from page contents. IDs that would produce the same output folder are
-made unique with suffixes such as `_2`.
-
-### Optional answer key
-
-Pass an instructor answer key with `--solutions` or `-s`. It may be a PDF,
-image, Markdown file, LaTeX file, or supported JSON structure. If you omit it,
-the program generates and independently checks its own worked solutions.
-
-See [Provide or revise an answer key](#provide-or-revise-an-answer-key) before
-assuming that a supplied key has been checked for mathematical correctness.
-
-### Optional rubric
-
-Pass an instructor rubric with `--rubric` or `-r`. It may be a supported
-document or rubric JSON. If you omit it, the program generates a rubric from
-the assignment, solutions, and any instructions supplied with
-`--rubric-prompt`.
-
-See [Provide or revise a rubric](#provide-or-revise-a-rubric) for the point
-rules and JSON shape.
-
-## Choose a command
-
-The four commands build progressively more of the same workflow:
-
-```mermaid
-flowchart LR
-    I["inspect<br/>assignment structure"] --> S["solve<br/>worked solutions"]
-    S --> R["rubric<br/>scoring criteria"]
-    R --> G["grade<br/>student results"]
-```
-
-Every command requires `--assignment` and `--out`. You can run an earlier
-command first and then continue with the same output directory, provided all
-inputs and settings remain unchanged.
-
-`--out` must be separate from every source path: the assignment, optional
-answer key, optional rubric, and submissions. It cannot equal, contain, or be
-inside any of those paths; in particular, never put `--out` inside a
-submissions directory. Use a sibling such as `runs/hw3`, not
-`submissions/generated`.
-
-### `inspect`
-
-Use `inspect` before a full grading job to confirm that the assignment was
-understood correctly. It creates `assignment_spec.json`, which lists the
-problems, subproblems, prompts, expected answer areas, and printed points.
-
-```bash
-autograder inspect --assignment hw3.pdf --out runs/hw3
-```
-
-This is the least expensive command because it runs only the assignment
-understanding stage.
-
-### `solve`
-
-Use `solve` to create the assignment structure and worked solutions. Review
-`solutions_manual.md` before relying on generated answers for grading.
-
-```bash
-autograder solve \
-    --assignment hw3.pdf \
-    --out runs/hw3
-```
-
-To use an instructor key:
-
-```bash
-autograder solve \
-    --assignment hw3.pdf \
-    --solutions hw3-key.pdf \
-    --verify-provided-solutions \
-    --out runs/hw3-with-key
-```
-
-### `rubric`
-
-Use `rubric` to create the assignment structure, solutions, and scoring
-criteria. Review `rubric.md` before grading.
-
-```bash
-autograder rubric \
-    --assignment hw3.pdf \
-    --rubric-prompt "Reward correct setup even after an arithmetic error." \
-    --out runs/hw3
-```
-
-### `grade`
-
-Use `grade` for the complete workflow. It requires student submissions.
-
-```bash
-autograder grade \
-    --assignment hw3.pdf \
-    --submissions submissions/ \
-    --out runs/hw3
-```
-
-The command exits with:
-
-| Exit code | Meaning |
-|---|---|
-| `0` | The requested work completed successfully. |
-| `2` | Some student work could not be completed. Available reports, the summary, the review queue, and the manifest were still written. |
-| `130` | The operator interrupted the command with `Ctrl-C`. Run the identical command again to resume. |
-| `1` | The command stopped on an error. Add `-v` to show a traceback. |
-
-## Run and review a grading job
-
-### Inspect the assignment structure
-
-Start a real assignment with:
+**Run `inspect`, then approve `assignment_spec.json` before creating solutions
+or grading students.** Every later artifact is keyed to the lowest-level
+problem IDs found here, so an incorrect hierarchy can attach solutions,
+criteria, work, and scores to the wrong problem.
 
 ```bash
 autograder inspect \
-    --assignment path/to/assignment.pdf \
-    --out runs/assignment-name
+    --assignment examples/sample/sample_assignment.pdf \
+    --out runs/sample-demo
 ```
 
-Open `runs/assignment-name/assignment_spec.json`. Confirm that:
+Check that every gradable problem and subproblem appears once, the hierarchy
+and prompts are correct, expected answer areas and figures are sensible,
+dependencies reflect phrases such as “using part (a),” and every printed point
+value was read correctly. If the structure is wrong, improve the source and
+start with a new output directory. Do not edit `assignment_spec.json` and
+continue: generated files are pipeline-owned resume data, not teacher inputs.
 
-- every problem and subproblem is present;
-- identifiers match the intended hierarchy;
-- prompts and expected answer areas are sensible; and
-- printed point values were read correctly.
+## Choose and approve solutions
 
-If the structure is wrong, improve or replace the source document, then use a
-new output directory. Do not continue to grading with a known-bad structure.
+**Decide whether the source of truth is your key or a generated manual, and
+whether supplied answers need an independent check.** Coverage validation and
+correctness verification are different operations.
 
-### Grade submissions
+| Decision | What the autograder does | Consequence before grading |
+|---|---|---|
+| Omit `--solutions` | Generates each answer, then asks a separate evaluator to re-derive and check it. A rejected answer can be regenerated, for up to three solver/evaluator attempts with the standard configuration. | Review `solutions_manual.md`. Any answer still unverified sends grades that depend on it to human review. |
+| Supply a document or JSON key without independent verification | Matches entries to assignment problems, checks coverage and nonempty answers, and for document keys checks that the requested quantity and given values appear to match. | A matched supplied entry can be marked `verified` without its mathematics having been independently checked. Treat that flag as coverage trust, review the key yourself, and do not describe it as a correctness check. |
+| Supply a key with `--verify-provided-solutions` | Performs the same matching and asks independent evaluator agents to check the supplied entries. | A rejected answer becomes unverified and sends dependent grades to review. A successfully checked answer still depends on verified prerequisites. |
+| Supply an incomplete key | Generates missing or empty entries through the normal solver/evaluator process and records the coverage gap. Unknown IDs are ignored with a warning. | Instructor and generated entries can coexist. Use `--strict-solutions` if a gap must stop the run instead. |
 
-Continue with the same assignment and output directory:
+For a supplied document, content matching is model-assisted: a stale entry that
+answers a different quantity or uses different given values is marked
+unverified. JSON keys are loaded by problem ID and do not receive that document
+matching pass. In either form, inspect the resulting manual rather than
+assuming input structure proves correctness. Accepted JSON forms and fields
+are documented in the [Reference](reference.md).
+
+Solution trust propagates through prerequisites. An evaluator may accept part
+(b)'s work, but if part (a) is an unverified prerequisite, part (b) is also
+saved as unverified. Solvers see verified prerequisite results as official and
+unverified drafts only as advisory context. Grades that consult either
+unverified solution are queued for a person.
+
+There is one important failure boundary for supplied-answer verification. If
+an evaluator rejects an answer, the answer becomes unverified. If the evaluator
+itself fails, the supplied entry keeps its previous matching-based trust level;
+that infrastructure failure alone does not mark it unverified or queue
+dependent grades. The saved manual has no separate “check unavailable” state,
+and reuse does not retry that check. The command prints the count and
+`run_manifest.json` records the issue. Review those answers manually, or fix the
+cause and repeat with a new output directory.
+
+Always read `solutions_manual.md`, including provenance, verifier notes, and
+unverified prerequisite lists, before approving a rubric or grades.
+
+## Choose and approve the rubric
+
+**Resolve the point source first, then decide whether missing rubric content
+may be generated.** The program never guesses how to divide an ambiguous
+printed total.
+
+| What the blank assignment establishes | Required action | Consequence |
+|---|---|---|
+| Every lowest-level problem has a printed value | You may omit `--rubric` or provide one with matching per-problem weights. | Printed leaf values are authoritative. A conflicting supplied weight stops the run. |
+| No point values and no assignment or parent total appear anywhere | You may omit `--rubric`. | Each lowest-level problem receives 1 point. |
+| Some values or a parent/assignment total appear, but not every lowest-level weight is determined | Supply a complete teacher rubric with exactly one explicit weighted entry per lowest-level problem. | Without it, the run stops before rubric generation. The program does not invent a split. |
+| A complete point allocation conflicts with a printed leaf, parent, or assignment total | Correct the assignment source or teacher rubric. | The run stops; neither generated criteria nor strict mode overrides the conflict. |
+
+If you provide no rubric, the program generates criteria from the assignment
+and solutions. A rubric document is matched to problems by content; rubric JSON
+is checked directly. `--rubric-prompt` steers generated criteria and generated
+gaps—for example, toward method credit—but never changes fixed point totals and
+has no effect when a supplied rubric is already complete.
+
+`--strict-rubric` has a narrow scope: it stops when any lowest-level problem is
+missing an entry. Without it, missing entries are generated and marked
+`[auto-generated]`. Strict mode does not make conflicting point totals valid,
+and it does not turn criterion subtotals into a new source of problem weights.
+
+After problem weights are accepted, the program enforces them
+deterministically. Criteria that sum to a different amount are rescaled
+proportionally to the authoritative problem weight; an empty criterion list is
+replaced by one full-credit criterion; duplicate criterion IDs are renamed;
+unknown problem entries are dropped; and the rubric total is recomputed. These
+repairs and coverage warnings appear in `run_manifest.json`. Review
+`rubric.md` for the resulting policy, not only the source rubric.
+
+## Grade the prepared roster
+
+**Run `grade` only after the assignment, solutions, rubric, roster, and privacy
+decision are ready.** A successful command means artifacts were written; it
+does not mean every grade is safe to release.
 
 ```bash
 autograder grade \
-    --assignment path/to/assignment.pdf \
-    --submissions path/to/submissions/ \
-    --out runs/assignment-name
+    --assignment examples/sample/sample_assignment.pdf \
+    --submissions examples/sample/submissions \
+    --out runs/sample-demo
 ```
 
-The completed assignment analysis can be reused because the inputs and
-settings match. During grading, each submission is searched by problem content
-rather than assumed page position. This allows for inserted pages, appended
-sheets, reordered work, and incorrect problem labels.
+Add the external solution and rubric inputs you approved when applicable. Use
+the [Reference](reference.md) for the exact flags and command-specific options.
 
-When handwriting is too small in a full-page view, an agent can request a
-cropped, higher-resolution view of the relevant area. It can also rotate pages
-and inspect other pages. Enlarging a crop cannot recover detail absent from a
-blurry or low-resolution scan.
+For each student, the mapper searches all pages by problem content rather than
+assuming the blank assignment's page positions. It can associate inserted or
+appended pages, continued answers, out-of-order work, and mislabeled work with
+the intended problem. A separate transcription pass preserves mistakes and
+marks unreadable spans; the grader then applies every rubric criterion. Model
+tasks within a stage may run concurrently, but students are processed one at a
+time.
 
-### Read the summary, reports, and review queue
+The normal completion code is `0`. An interrupted command returns `130` and can
+be resumed with the identical command. If some student work remains incomplete,
+the program still writes all available reports, summary rows, review items,
+manifest data, and returns `2`. Other startup or stage errors return `1`; add
+verbose logging when the one-line error is not enough. Exact CLI behavior is in
+the [Reference](reference.md).
 
-Begin with these three files:
+## Review results and decide what may be released
 
-1. Open `summary.csv` for class totals and per-problem scores.
-2. Open `review_queue.md` for student/problem pairs needing a person.
-3. Open `students/<id>/report.md` for a student's detailed scoring,
-   justifications, feedback, and transcript.
+**Start with the class summary and review queue, resolve every queued item,
+then spot-check results that were not queued.** The queue routes uncertainty;
+it is not an approval system, and a score can be present while still requiring
+a human decision.
 
-Everything under `--out` is generated by the program:
+Read artifacts in this order:
 
-| Path | What it tells you |
-|---|---|
-| `assignment_spec.json` | Problems, subproblems, prompts, expected answer areas, dependencies, and printed points. |
-| `solutions_manual.json` / `.md` | Reasoning and final answers, where each solution came from, its saved check status, and any failed checks. |
-| `rubric.json` / `.md` | Scored criteria, points, and grading notes for each lowest-level problem or subproblem. |
-| `students/<id>/mapping.json` | Where the program found each answer, the label written by the student, page regions, and work it could not assign to a problem. |
-| `students/<id>/transcripts.json` | Verbatim transcripts, confidence values, unreadable spans, quality notes, and empty or failed results. |
-| `students/<id>/grades.json` | Criterion scores, evidence, feedback, confidence, review reasons, and integrity concerns. |
-| `students/<id>/report.md` | A readable student report. An incomplete report shows a processed subtotal but no final total. |
-| `summary.csv` | One row per student. When a student's score is incomplete, the `total_awarded` and `percent` cells are blank rather than zero; `total_possible`, `n_needs_review`, and `ocr_min` are still filled in. |
-| `review_queue.md` | Every result that needs human attention and the reason it was added. |
-| `run_binding.json` | Fingerprints used to confirm that saved results still belong to the requested inputs and settings. |
-| `run_manifest.json` | The tool version, timestamps, model, selected run configuration, input hashes, issues, and token usage accumulated during the current command invocation. It never contains the API key. |
+1. `summary.csv` shows roster-level totals, per-problem awards, review counts,
+   flags, completeness, and failures.
+2. `review_queue.md` names every student/problem pair requiring a person and
+   gives the reason.
+3. `students/<id>/report.md` shows criterion scores, evidence, feedback,
+   location status, and the transcript for that student.
+4. When evidence is unclear, compare `mapping.json`, `transcripts.json`, and
+   `grades.json` with the original submission. Also consult
+   `solutions_manual.md` and `rubric.md` before changing a grade.
 
-#### What `verified` means in `solutions_manual.json`
+Use the following distinctions when deciding an outcome:
 
-The flag means different things depending on where the answer came from.
-
-For a generated answer, `verified` means it passed the evaluator and every
-prerequisite solution is verified. For a supplied answer, `verified` means the
-entry was matched to an assignment problem and every prerequisite solution is
-verified; it does not by itself mean the mathematics was independently checked.
-`--verify-provided-solutions` requests that separate check, and any failed
-check is recorded.
-
-In both cases the flag also depends on the answers this one builds on.
-Unverified prerequisite drafts are advisory only, and grades that depend on
-them are sent to review. So a correct answer to part (b) is still reported as
-unverified while part (a) is unverified.
-
-#### When the independent check cannot run
-
-This case is easy to mistake for a failed check, so it is worth separating.
-
-If the evaluator cannot run, the supplied entry keeps its problem-matching
-status even though the requested correctness check did not finish. This failure
-alone does not mark the answer unverified or send dependent grades to the
-review queue. The saved manual does not keep a separate “check unavailable”
-status, and reusing it does not retry the check. Review the affected answer
-manually, or resolve the evaluator failure and repeat the job with a new
-`--out` directory.
-
-The practical consequence: an answer that looks verified in the manual may
-never have been checked, and nothing in the saved files distinguishes the two.
-The command prints a count of affected answers when it happens, and
-`run_manifest.json` records each one.
-
-The JSON files make decisions inspectable and support later stages. The
-Markdown and CSV files are intended for human review. Do not edit any generated
-file. See [Resume or change a grading job](#resume-or-change-a-grading-job)
-before deleting or reusing anything in the output directory.
-
-### Understand work statuses and incomplete results
-
-The program records what it observed for every lowest-level problem or
-subproblem. The saved status names appear in `mapping.json` and student
-reports:
-
-| What the program observed | Saved status | Score and review result |
+| Saved result | Score consequence | Review consequence |
 |---|---|---|
-| Attributable work was found in the expected place. | `answered` | The work is transcribed and graded. It is reviewed only if another trigger applies. |
-| Attributable work was found on another or extra page. | `answered_elsewhere` | The work is transcribed and graded. It is reviewed only if another trigger applies. |
-| The student began an answer but clearly did not finish it. | `partial` | The attempt is transcribed and graded against the rubric. It is reviewed only if another trigger applies. |
-| The student's written label names a different problem, but the content matches this one. | `mislabeled` | The work is transcribed and graded under the matching problem. It is reviewed only if another trigger applies. |
-| The expected answer area is visibly empty, and no related work was found elsewhere. | `blank` | An explicit clean blank, with no work regions, receives a zero without a grader call. This status alone does not require review. A `blank` that also carries a work region still scores zero, but human review is required to confirm the region is empty. |
-| Work is present, but its readability is doubtful. | `illegible_candidate` | Processing continues when possible, and human review is always required. |
-| No work could be attributed to the problem. | `not_found` | A clean no-work result receives a provisional zero without a grader call, and human review is always required. |
-| The mapping stage omitted the problem, or did not provide usable page regions for work it claimed to find. | `mapping_error` | Claiming work without a usable location leaves nothing to transcribe, so the claim is not trusted. No score is assigned, and human review is always required. Use a new output directory to run the mapping again. |
+| `answered`, `answered_elsewhere`, `partial`, or `mislabeled` | The located attempt is transcribed and graded against the rubric. | Queued only when another trigger applies; mislabeled work is graded under the problem its content answers. |
+| Clean `blank` with no region | Deterministic zero, with no grader call. | The blank status alone is not queued. Integrity signals still queue it. |
+| `not_found` | Provisional deterministic zero, with no grader call. | Always queued so a person confirms no work was missed; any unattributed work is included as context. |
+| `blank` or `not_found` with a region | Deterministic zero; the region says where the mapper looked and does not turn the result into a gradeable attempt. | Always queued so a person confirms the region is empty. |
+| `illegible_candidate` | Processing continues and a score may be present. | Always queued. Do not treat the score as approval of an unreadable answer. |
+| `mapping_error`, failed transcription, or failed grading | No award is available for that problem; it is not converted to zero. | Always queued. The student's final total is unavailable until retry or human resolution. |
+| Low transcript or grader confidence | A completed score remains present. | Queued when below the current threshold; low confidence never silently becomes zero. |
+| Any completed result marked `needs_review` | The score usually remains present. | A person must decide because of confidence, uncertainty, integrity signals, an unverified solution, illegibility, or deterministic validation. |
 
-If the mapper records unrelated work it could not assign to a problem, that
-context accompanies the `not_found` review item so a person can check whether
-the work was overlooked.
+The default review comparisons are grader confidence below `0.60` and
+transcript confidence below `0.50`. Other intrinsic triggers include an
+unverified official solution, mapper/transcriber/grader integrity concerns, a
+grader's explicit uncertainty, and an omitted rubric criterion. The program
+fills an omitted criterion with zero and queues it, clamps every criterion
+award to its valid range, and recomputes totals in code rather than trusting a
+model-provided total. Deterministic `blank` and `not_found` paths do not consult
+a solution, so an unverified solution alone does not queue them.
 
-A problem is also added to `review_queue.md` when:
+A per-problem failure preserves successful sibling problems. The report shows
+an unavailable problem and a processed subtotal, but no final total;
+`summary.csv` leaves `total_awarded` and `percent` blank rather than presenting
+the subtotal as a final grade. A failure that prevents an entire student from
+being processed creates a `failed` summary row with blank score fields, while
+the rest of the class continues.
 
-- grader confidence is below `--review-confidence` (default `0.60`);
-- transcript confidence is below `--ocr-threshold` (default `0.50`);
-- the solution used for grading is unverified — except on the `blank` and
-  `not_found` paths, which award zero without consulting the solution and so do
-  not need a verified one;
-- the mapper, transcriber, or grader records an integrity concern; mapper or
-  transcript integrity signals enter review even on deterministic-zero paths;
-- a grader omits a rubric criterion, which is filled with zero and flagged;
-- transcription or grading fails; or
-- the grader independently marks a materially uncertain decision.
+Before release, resolve every unavailable or queued result against the source,
+inspect a representative sample of unqueued results, record any human
+adjustments outside the generated directory, and approve the final grades
+yourself. Never interpret an empty review queue as a guarantee of correctness.
 
-The program clamps every criterion score to its valid range, fills an omitted
-criterion with zero, and recomputes totals in code. It does not trust totals
-returned by the model.
+## Resume an interrupted or partially failed run
 
-One failed problem does not erase successful work on sibling problems. The
-failed result is marked unavailable, not scored as zero, and retried on the
-next identical run without `--force`. A report with unavailable work shows its
-processed subtotal, while its final total and the corresponding summary fields
-remain blank.
-
-If an entire student fails, the program continues with the remaining students
-and exits with code `2` after writing all available results.
-
-## Provide or revise an answer key
-
-Pass an answer key with `--solutions PATH`. Two forms are accepted.
-
-**Document input:** A PDF, image, Markdown file, or LaTeX file is read and
-matched to assignment problems by content. The program checks whether entries
-cover the assignment, contain answers, and appear to match the requested
-quantity and given values. This is content/mapping validation, not mathematical
-verification. Add `--verify-provided-solutions` to request an independent
-correctness check.
-
-**JSON input:** Supply either a top-level `"solutions"` object:
-
-```json
-{
-  "solutions": {
-    "1a": {"final_answer": "3.0 s", "reasoning": "Use the flight-time equation."},
-    "1b": {"final_answer": "29 m/s"}
-  }
-}
-```
-
-or a direct mapping:
-
-```json
-{
-  "1a": "3.0 s",
-  "1b": "29 m/s"
-}
-```
-
-For an object value, `"answer"` is accepted as an alias for
-`"final_answer"`. The `"reasoning"` field is optional.
-
-By default, a missing or empty entry is generated and sent through the same
-solver/evaluator check used when no key is supplied. Only an answer that
-remains unverified sends dependent grades to review. `--strict-solutions`
-stops instead of filling such gaps. Entries for unknown problem IDs are
-ignored with a warning.
-
-When no key is provided, a solver creates each answer and a separate evaluator
-re-derives and checks it. A failed check can trigger a fresh solution attempt.
-By default, that allows one initial solver/evaluator attempt plus up to 2
-regeneration attempts (3 total attempts). Any answer still unverified remains
-visible and sends dependent grades to review.
-
-To revise a key, keep the source file outside the output directory, update it,
-pass it with `--solutions`, and choose a new `--out` path:
+**Repeat the identical command without `--force` to resume.** Eligible saved
+stages and completed students are reused, while failed solution-agent,
+transcription, and grading entries are retried when an API key is available.
+Successful sibling results are retained.
 
 ```bash
 autograder grade \
-    --assignment hw3.pdf \
-    --submissions submissions/ \
-    --solutions revised-key.json \
-    --out runs/hw3-revised-key
+    --assignment examples/sample/sample_assignment.pdf \
+    --submissions examples/sample/submissions \
+    --out runs/sample-demo
 ```
 
-## Provide or revise a rubric
+The reusable records are the assignment structure, solutions, rubric, and
+each student's mapping, transcripts, and grades. Invalid saved records may be
+rebuilt. If a solution-agent failure is repaired, every transitively dependent
+solution is regenerated. When that changes the manual, the rubric, grades,
+reports, summary, review queue, and manifest are rebuilt; mappings and
+transcripts remain reusable. A solution that exhausted its evaluator retries
+and was saved as unverified is a completed result, not a retryable agent
+failure; review it manually or deliberately rebuild the run.
 
-Pass a rubric with `--rubric PATH`. A PDF, image, Markdown file, or LaTeX file
-is matched to assignment problems by content. A JSON file is checked directly
-against the rubric structure:
+Treat everything inside `--out` as read-only. A hand edit may be consumed as
+pipeline state, overwritten on resume, or make the cache internally
+inconsistent. Change an external teacher input and use a new output directory
+instead. Files are replaced atomically one at a time, but the directory is not
+a transaction: do not run two processes against the same output directory.
 
-```json
-{
-  "title": "HW3 rubric",
-  "total_points": 20,
-  "problems": [
-    {
-      "problem_id": "1a",
-      "points": 3,
-      "criteria": [
-        {
-          "id": "1a.c1",
-          "description": "Applies the kinematics equation with correct signs",
-          "points": 2
-        },
-        {
-          "id": "1a.c2",
-          "description": "Gives the correct numeric answer with units",
-          "points": 1
-        }
-      ],
-      "grading_notes": "Accept rounding within 5%."
-    }
-  ]
-}
-```
+## Decide whether an output directory can be reused
 
-Each supplied problem weight must agree with every applicable point value
-printed on the assignment—including the value for that problem or subproblem,
-a parent-problem total, and the assignment total. A contradiction stops the
-command; the program does not change the supplied problem weight.
+**Reuse a directory only for the same grading identity or a compatible
+extension of it.** `run_binding.json` fingerprints the assignment,
+cache-relevant settings, teacher materials, rubric instructions, and each
+student's ordered files as that student is encountered.
 
-After the problem weights are accepted, criterion points must sum to their
-problem's weight. The program proportionally rescales a criterion list that
-does not sum correctly and inserts one full-credit criterion when the list is
-empty. It fills missing rubric entries and marks them `[auto-generated]`.
-Warnings about these repairs and coverage gaps are recorded in
-`run_manifest.json`.
-
-#### Where problem weights come from
-
-The program never invents a point split. Which of three cases you are in
-depends only on what the blank assignment prints:
-
-| What the assignment prints | What you must supply | If you supply nothing |
+| Planned action | Reuse the same `--out`? | Consequence |
 |---|---|---|
-| A point value on every lowest-level problem or subproblem | Nothing — the printed values are used as-is | Works |
-| No point values and no total, anywhere | Nothing | Each lowest-level problem or subproblem gets **1 point** |
-| Some values or a total, but not enough to determine every lowest-level weight | A complete `--rubric` with exactly one weighted entry per lowest-level problem or subproblem | **The command stops** with a point-allocation error, before any model call |
+| Continue from `inspect` to `solve`, `rubric`, or `grade` with the same choices | Yes | Earlier compatible stages are reused and later input bindings are added. |
+| Repeat an identical command after interruption or partial failure | Yes | Completed work is reused and eligible failures are retried. |
+| Change only review-confidence thresholds | Yes | Scores are reused; review flags, reports, summary, and queue are recalculated from the new thresholds without a model call. Intrinsic review reasons remain. |
+| Change worker count, prompt-caching choice, API key source, verbosity, or merely add/remove `--force` | Yes | These choices do not redefine saved content, although `--force` controls whether it is reused on that invocation. |
+| Change the assignment, any recorded submission file or its order/name, the answer key, rubric, or rubric prompt | No | Use a new directory; a binding mismatch stops the command. |
+| Change model, thinking, effort, token limit, solution retry policy, strict-solutions, strict-rubric, or supplied-solution verification policy | No | These affect generated content or trust and require a new directory. |
+| Add or remove a student from the roster | No | The binding is per encountered student, not a complete-roster lock. Class files may be rewritten for the new roster and an old student directory may remain, so always start a new directory. |
+| Reuse an older directory with an unsupported binding schema or settings recorded under an obsolete binding policy | No | Start fresh rather than trying to reinterpret old trust or review behavior. |
 
-That third row is the case worth planning for: a homework that prints
-"Problem 3 (12 points)" over four unlabeled parts does not say how the 12
-splits, so grading cannot start until you say. The error names the problems it
-could not weight.
+The [Reference](reference.md) is authoritative for every cache-relevant setting,
+including programmatic configuration not exposed as a CLI flag.
 
-If printed values do not determine the points for every lowest-level problem
-or subproblem, provide a complete teacher rubric with an explicit weighted
-entry for each one. The program does not guess how to split an ambiguous
-printed total. Only an assignment with no printed point values and no printed
-total defaults to **1 point for each lowest-level problem or subproblem**.
+Use `--force` only when the inputs and bound settings are unchanged but every
+stage requested by this command should be rebuilt—for example, after upgrading
+the program and deliberately accepting the extra cost. It does not override a
+binding mismatch or adopt different inputs. It also discards the benefit of a
+partly completed run, so do not add it merely to resume.
 
-`--strict-rubric` stops when any assignment problem lacks a rubric entry instead
-of generating the missing entry.
+## Change an answer key, rubric, assignment, or roster
 
-Use `--rubric-prompt` to guide rubric generation without changing fixed point
-totals:
+**Edit the source outside the output directory and choose a new `--out`.** This
+preserves the original audit trail and prevents artifacts produced under two
+grading policies from being mixed.
 
-```bash
-autograder rubric \
-    --assignment hw3.pdf \
-    --rubric-prompt "Weight setup and method over arithmetic." \
-    --out runs/hw3-method-focused
-```
-
-The instruction affects generated criteria and any gaps filled in a supplied
-rubric. It has no effect when the supplied rubric is already complete.
-
-To revise a rubric, keep the source file outside the output directory, update
-it, pass it with `--rubric`, and choose a new `--out` path.
-
-## Resume or change a grading job
-
-Before reading a saved result or making a model call, the autograder compares
-the assignment, teacher materials, rubric instructions, model-related
-settings, and any previously recorded student files with the saved values in
-`run_binding.json`. A new student name is recorded when it first appears.
-
-This check does not compare the complete roster. Adding or removing a student
-in the same output directory may not be rejected: class-level files can be
-rewritten for the new roster, and an old student's directory can remain.
-Always use a new `--out` directory after any roster change.
-
-### What gets reused
-
-When a job resumes, the autograder may reuse saved work instead of repeating
-it. Reusable records are the assignment structure (`assignment_spec.json`),
-solutions (`solutions_manual.json`), rubric (`rubric.json`), and each student's
-mapping (`mapping.json`), transcripts (`transcripts.json`), and grades
-(`grades.json`).
-
-### What happens if you edit a generated file
-
-Treat files inside `--out` as read-only. If a saved record is invalid
-or contains failed work eligible for retry, the autograder may rewrite that
-file. A manual edit can therefore affect the resumed job or be lost. To change
-an answer key or rubric, edit the source file outside the output directory,
-pass it with `--solutions` or `--rubric`, and use a new `--out` directory.
-
-The output path must also remain disjoint from all source paths. Do not place
-it inside a submissions directory or store an assignment, answer key, rubric,
-or submission under it.
-
-### Resume after interruption
-
-Run the identical command again with the same assignment, submissions, teacher
-materials, settings, and output path. Successful stages and completed students
-can be reused. Failed solution, transcription, and grading entries are retried
-without discarding successful siblings. Repairing a failed solution also
-regenerates every transitive dependent solution. If that changes the manual,
-the rubric, grades, reports, summary, review queue, and manifest are rebuilt;
-student mappings and transcripts are retained.
-
-Safe resume:
+For example, a revised key should produce a separate run:
 
 ```bash
-autograder grade -a hw3.pdf -S submissions/ -o runs/hw3
-# after interruption, run the identical command again
-autograder grade -a hw3.pdf -S submissions/ -o runs/hw3
+autograder grade \
+    --assignment examples/sample/sample_assignment.pdf \
+    --submissions examples/sample/submissions \
+    --solutions path/to/revised-key.json \
+    --out runs/sample-demo-revised-key
 ```
 
-If every requested result is already saved, the repeated command makes no model
-call and needs no API key.
+Apply the same rule to rubric content or instructions, the assignment source,
+any student's files, filenames or page order, and roster membership. Review
+thresholds are the exception: because they change routing rather than scores,
+you can rerun the same directory to ask which existing results a stricter or
+looser threshold would flag.
 
-Output directories written by an earlier release — identifiable by
-`"schema_version": 1` in their `run_binding.json` — used different
-solution-trust rules and cannot be resumed. Start again with a fresh `--out`
-directory. (This is the run-binding file's own format version, not a version of
-the autograder.)
+## Manage cost, latency, and concurrency
 
-A directory written before the review thresholds stopped binding a run also
-cannot be resumed. You can recognise one by `review_confidence` appearing under
-`config` in its `run_binding.json`. Its saved grades have the old thresholds
-already applied and no record of which mark came from which reason, so
-recalculating review marks from them would produce the wrong answer. Rather
-than do that quietly, the run is refused and the message names the setting.
-Start again with a fresh `--out` directory.
+**Choose model quality and reasoning settings before binding the output
+directory, then control concurrency to fit your API limits.** Model, thinking,
+effort, and output-token changes require a fresh directory; worker count does
+not.
 
-### Start a new job after changing inputs or settings
+Cost is concentrated as follows:
 
-Choose a new output directory after changing the assignment, any submission,
-the answer key, the rubric, the rubric instructions, or any setting in the
-table below. Everything else is safe to vary between runs on the same
-directory.
+- Assignment analysis happens once for a compatible run.
+- Generated solutions are relatively expensive because a separate evaluator
+  checks each draft and may trigger regeneration.
+- Rubric creation happens once for a compatible run.
+- Mapping happens once per student. Transcription and grading run per located
+  or attempted problem; clean zero paths avoid grader calls.
+- Students run sequentially. Independent problem tasks within solution,
+  transcription, and grading stages use up to the configured worker count.
 
-| Option | Changing it needs a new `--out` |
-|---|---|
-| `--model` | Yes |
-| `--thinking` | Yes |
-| `--effort` | Yes |
-| `--review-confidence` | No |
-| `--ocr-threshold` | No |
-| `--strict-solutions` | Yes |
-| `--strict-rubric` | Yes |
-| `--verify-provided-solutions` | Yes |
-| `--max-tokens` | Yes |
-| `--max-workers` | No |
-| `--no-prompt-caching` | No |
-| `--api-key` | No |
-| `--force` | No |
-| `--verbose` | No |
+More workers can reduce wall time but increase simultaneous requests and rate
+pressure; it does not reduce total logical work. Adaptive reasoning and higher
+effort can improve difficult judgments while increasing latency or token use;
+disabled reasoning or lower effort can be cheaper but may reduce quality. The
+selected model must support image input, tool use, and the requested reasoning
+controls.
 
-The two review thresholds are worth a note, because they behave differently
-from every other setting in the table. They change no score. They decide only
-which finished results are marked for human review, and that mark is
-recalculated from the current thresholds each time a saved grade is read.
+Prompt caching is enabled in the standard configuration and can reduce repeated
+input-token cost within multi-turn agents. Disable it only for debugging or an
+account/model incompatibility. Each agent retains a bounded number of tool
+images and can request an evicted crop again. `run_manifest.json` separates API
+calls, ordinary input, cache-write, cache-read, and output tokens for the
+current command invocation only; it does not combine usage from earlier
+resumptions.
 
-The practical effect is that you can ask "which results would a stricter
-threshold have flagged?" without paying to grade anything again. Re-run the
-same command against the same output directory with a different
-`--review-confidence` or `--ocr-threshold`; every score is reused from cache,
-and `review_queue.md` and `summary.csv` are rewritten to match the new
-threshold. That run costs nothing and needs no API key.
+## Protect student data at the point of use
 
-One thing does not move. A result flagged for a reason that describes the work
-itself — an unverified official solution, an integrity flag, work the mapper
-could not read — stays flagged no matter what you set the thresholds to. Only
-the two confidence comparisons respond.
+**Confirm institutional permission before the first live call, and secure both
+inputs and outputs for the life of the run.** Assignment pages, student
+submissions, and relevant teacher materials are sent to Anthropic whenever a
+required stage calls the model. The output directory contains student IDs,
+source paths, transcriptions, grades, and review evidence. Keep it out of public
+repositories and broadly shared folders, apply your normal retention rules,
+and restrict access like the original submissions.
 
-Changed rubric:
+Prefer `ANTHROPIC_API_KEY` in the process environment over repeating a key on
+the command line, subject to your institution's secret-handling policy. The key
+is not written into run artifacts. A cached-only command needs no key.
 
-```bash
-autograder grade -a hw3.pdf -S submissions/ \
-    --rubric revised-rubric.md -o runs/hw3-revised-rubric
-```
+Student-authored directions are untrusted data, not instructions. Mapping,
+transcription, and grading agents are instructed to ignore such directions,
+record integrity concerns, and continue; every recorded concern requires human
+review. Inspect the original submission before acting on an integrity flag.
 
-The saved comparison uses SHA-256 fingerprints for the assignment, teacher
-materials, rubric instructions, and each recorded student's ordered input
-files. An existing nonempty directory without a supported
-`run_binding.json` cannot be adopted; choose an empty path instead.
+Generated reports escape untrusted Markdown/HTML, render unusual control
+characters visibly, and neutralize formula-like text cells in CSV while
+leaving numeric score cells numeric. The agent calculator accepts restricted
+arithmetic, not names, imports, attribute access, or arbitrary code, and limits
+expensive operations. These safeguards reduce document and spreadsheet risk;
+they do not make the output public or eliminate the need for human review.
 
-### What `--force` does
+If you distribute or deploy the project, also confirm that your use of
+PyMuPDF fits its AGPL or commercial licensing terms.
 
-`--force` ignores saved results and rebuilds every stage the command requests.
-Use it when the inputs are unchanged but you want the work redone anyway — after
-upgrading the autograder, for example.
+## Troubleshoot by protecting the audit trail
 
-It is a per-run switch, not a property of the directory. You can add `--force`
-to a directory built without it, and drop it again afterwards; a directory built
-with `--force` still resumes normally on a later run without the flag.
+**Diagnose from the command message, `run_manifest.json`, summary, and stage
+artifacts before rerunning.** Resume only when the grading identity is
+unchanged; otherwise use a new output directory.
 
-What it does not do is adopt different inputs. `--force` rebuilds stages; it
-does not override a mismatch detected for recorded inputs or settings. If the
-assignment, answer key, rubric, rubric instructions, submissions, or any setting
-from the table above changed, the command still stops and asks for a new `--out`
-directory — rebuilding is not the same as accepting a different grading setup.
+- **No API key:** Cached results can still be read. Set `ANTHROPIC_API_KEY` or
+  provide a key if a model call or failed-item retry is required.
+- **No gradable problems:** Confirm that the blank assignment is readable and
+  contains the questions. Improve the source and start with a new output
+  directory.
+- **No submissions:** Check paths, supported extensions, empty student
+  subdirectories, and the discovery layout in
+  [Prepare inputs and preserve student identity](#prepare-inputs-and-preserve-student-identity).
+- **Unsupported or mixed text input:** Convert unsupported files to PDF, PNG,
+  JPEG, Markdown, or LaTeX. Keep a standalone Markdown/LaTeX submission alone,
+  or convert it before combining pages.
+- **Output belongs to different inputs or settings:** Read the named binding
+  difference and choose a new output directory. `--force` cannot merge grading
+  identities.
+- **A student has `run_status=failed`:** Read the summary failure, log, and
+  manifest. Correct an input problem when necessary, then repeat the identical
+  command if the binding still matches.
+- **Final total or percent is blank:** At least one problem is unavailable.
+  Inspect the student report and review queue; the displayed processed subtotal
+  is not a final grade.
+- **`mapping_error`:** The mapper claimed work without a usable location or
+  omitted a problem. Inspect the submission and start a new output directory
+  to map it again; ordinary resume reuses a valid saved mapping.
+- **Nearly everything is queued:** Look for an unverified prerequisite
+  solution or submission-wide integrity concern in `solutions_manual.md`, the
+  review reasons, and student flags.
+- **Low transcript confidence:** Compare the transcript with the original and
+  obtain a clearer scan when possible. Zoom cannot restore missing source
+  detail.
+- **Unexpectedly low scores:** Compare criterion evidence with `rubric.md`.
+  If the policy is wrong, revise the external rubric or rubric prompt and use a
+  new output directory.
+- **Slow or expensive run:** Check the invocation's usage in the manifest,
+  model/reasoning choices, number of located answers, solution retries, and API
+  rate pressure. Choose new model-producing settings in a new directory; tune
+  worker count on the existing identity if only concurrency should change.
 
-Because `--force` discards saved work, it also discards a partly finished run.
-Do not add it when you simply want to resume after an interruption; a plain
-re-run does that and costs nothing for the stages already completed.
-
-Files are replaced safely one at a time: the program writes and synchronizes a
-temporary file before replacing its destination. This does not make the whole
-directory transactional. Do not run two processes against the same output
-directory, and do not assume that all files change as one unit after a crash.
-
-## Command option reference
-
-### Common options
-
-| Flag | Short | Default | Description |
-|---|---|---|---|
-| `--assignment` | `-a` | *(required)* | Blank assignment file or directory. Accepted extensions are `.pdf`, `.png`, `.jpg`, `.jpeg`, `.md`, `.markdown`, and `.tex`. |
-| `--out` | `-o` | *(required)* | Directory for generated results. Reuse it only with the same inputs and settings; choose a new path after a change. |
-| `--model` | | `claude-sonnet-5` | Anthropic model ID. See [Models, cost, and performance](#models-cost-and-performance). |
-| `--api-key` | | `$ANTHROPIC_API_KEY` | API key used for model calls. It is unnecessary when all requested results can be reused. |
-| `--max-workers` | | `4` | Agents that may run concurrently within one stage. Must be at least `1`. Students are still processed one at a time. |
-| `--max-tokens` | | `32768` | Raises the per-call output-token limit above the built-in 32768. A value at or below that is accepted but has no effect. Must be positive. |
-| `--thinking` | | `on` | Adaptive reasoning for every agent: `on` or `off`. |
-| `--effort` | | *(model default)* | Reasoning effort: `low`, `medium`, `high`, `xhigh`, or `max`. Omit it to use the model's default. |
-| `--no-prompt-caching` | | off | Disables Anthropic prompt caching. This is mainly useful for debugging and can increase input-token cost. |
-| `--force` | | off | Rebuilds every stage requested by the command. If inputs or settings changed, choose a new `--out` path; `--force` does not make the old directory reusable. |
-| `--verbose` | `-v` | off | Shows detailed agent activity and a traceback on errors. |
-
-### Answer-key options
-
-These options apply to `solve`, `rubric`, and `grade`.
-
-| Flag | Short | Default | Description |
-|---|---|---|---|
-| `--solutions` | `-s` | *(none)* | Instructor answer key in a supported document format or JSON. Missing entries are generated and independently checked by default. |
-| `--strict-solutions` | | off | Stops if the supplied key is incomplete instead of generating missing entries. |
-| `--verify-provided-solutions` | | off | Independently evaluates supplied entries when building a solutions manual. A saved manual is reused without rechecking. |
-
-### Rubric options
-
-These options apply to `rubric` and `grade`.
-
-| Flag | Short | Default | Description |
-|---|---|---|---|
-| `--rubric` | `-r` | *(none)* | Instructor rubric in a supported document format or JSON. Missing problem entries are generated and labeled `[auto-generated]`. |
-| `--rubric-prompt` | | *(none)* | Instructor preferences used while criteria are generated or gaps are filled. |
-| `--strict-rubric` | | off | Stops when any assignment problem lacks a rubric entry instead of generating the missing entry. |
-
-### Grading options
-
-These options apply only to `grade`.
-
-| Flag | Short | Default | Description |
-|---|---|---|---|
-| `--submissions` | `-S` | *(required)* | One or more student files or directories. See [Student submissions](#student-submissions). |
-| `--review-confidence` | | `0.60` | Sends a result to human review when grader confidence is below this value. Must be between `0` and `1`. |
-| `--ocr-threshold` | | `0.50` | Sends a result to human review when transcript confidence is below this value. Must be between `0` and `1`. |
-
-> **Short flags are case-sensitive.** `-s` means `--solutions`; `-S` means
-> `--submissions`. The other short forms are `-a`, `-o`, `-r`, and `-v`.
-
-## Models, cost, and performance
-
-The default is `claude-sonnet-5`. You may pass another Anthropic model ID
-available to your account. The model must support image input and tool use.
-Adaptive thinking, effort controls, and prompt caching also depend on model
-capabilities; the API rejects unsupported combinations.
-
-Choose the model and reasoning settings before creating an output directory.
-Changing them later requires a new output path.
-
-### Thinking and effort
-
-`--thinking on` lets the model decide when to use adaptive reasoning.
-`--thinking off` disables it and is generally faster and cheaper, with a
-possible loss of quality on multi-step work.
-
-`--effort` maps to the model's `output_config.effort` value. Higher levels can
-spend more tokens for deeper reasoning. Omit the option for the model's
-default, or use `--effort low` for an inexpensive draft.
-
-### Where time and cost come from
-
-- Assignment analysis, solutions, and rubric creation happen once for a
-  matching grading setup.
-- Solutions are relatively expensive because a separate evaluator checks each
-  generated answer and may request regeneration.
-- Mapping runs once per student.
-- Transcription and grading run for each problem where work was found or
-  attempted.
-- `--max-workers` controls concurrency within a stage. Students are processed
-  one at a time.
-
-The exact calls, tokens, and wall time depend on document length, located work,
-model choice, effort, retries, and reused results. For a large class, student
-processing usually dominates.
-
-Prompt caching is enabled by default. Multi-turn agents can reuse earlier
-prompt content rather than paying the full input cost again on every turn.
-`run_manifest.json` reports cache-write and cache-read tokens separately.
-Disable caching with `--no-prompt-caching` only when debugging or when the
-selected account and model do not support it.
-
-The manifest reports usage accumulated during the current command invocation;
-it does not combine usage from earlier resumptions.
-
-Agents can request many detailed page crops. By default, one agent retains up
-to 20 tool-result images in its conversation. When it adds more, the oldest
-are replaced with text; the agent can request a discarded crop again if
-needed.
-
-## Protect student data and handle untrusted content
-
-Assignment pages and student submissions are sent to Anthropic when a stage
-needs the model. Store outputs according to your institution's rules, restrict
-access to student reports, and do not run the program if your data-handling
-policy does not allow the transfer.
-
-Student-written content is treated as data, not as instructions to the model.
-The mapping, transcription, and grading agents are told to ignore directions
-embedded in a submission, record them as integrity concerns, and continue with
-the grading task. Any recorded concern sends the affected work to human review.
-
-The calculator available to agents evaluates restricted arithmetic syntax. It
-does not allow names, attribute access, imports, or arbitrary code, and it
-limits expensive operations and intermediate values.
-
-Student transcripts are HTML-escaped before being included in Markdown reports
-so submission text cannot close the transcript block or inject raw HTML. Every
-generated Markdown output, including the solutions manual and rubric, treats
-assignment, student, and agent text as inert data. Text-valued CSV cells are
-formula-neutralized before spreadsheet import; numeric score cells remain
-numeric. Rare control characters in student work are written as visible text in
-both CSV and Markdown output — a NUL appears as `\x00` — so a generated file
-always opens as text rather than being taken for a binary file. If a report or
-review item shows an integrity concern, inspect the original submission before
-finalizing the grade.
-
-## Troubleshooting
-
-| Symptom | What it means | What to do |
-|---|---|---|
-| The CLI warns that `ANTHROPIC_API_KEY` is not set | No API key is configured. Saved results can still be reused, but the command stops if it needs a model call. | Set the environment variable or pass `--api-key` before work that needs the model. If you expect to reuse saved results only, use the identical command and output path. |
-| No gradable problems were found | The assignment stage could not identify a usable problem structure. | Check that the blank assignment is readable and contains the questions, then retry with an improved source and a new `--out` path. |
-| No submissions were found | The supplied paths contain no supported student files, or student subdirectories are empty. | Check the paths, extensions, and directory arrangement described in [Student submissions](#student-submissions). |
-| A file type is unsupported | The source extension is not PDF, PNG, JPEG, Markdown, or LaTeX. | Convert the source to a supported format before running the command. |
-| A Markdown or LaTeX source cannot be combined with other files | A text submission was supplied alongside another page or document. | Keep that text file as the student's only submission, or convert it to PDF before combining pages. |
-| The output directory belongs to different inputs or settings | The directory already contains results for another grading setup. | Choose a new `--out` path. `--force` cannot combine different setups. |
-| A student row has `run_status` set to `failed` and blank scores | Processing failed before a student report could be completed. | Read the row's `failure` column, the command log, and `run_manifest.json`. Correct any source problem, then run the identical command again to retry. |
-| A final score or percentage is blank | At least one problem has no available score. The program will not present a partial subtotal as a final grade. | Open the student's report and review queue, resolve the failed problem, and run the identical command again when it is eligible for retry. |
-| A problem reports `mapping_error` | The mapping stage did not provide a usable location for that problem. | Inspect the submission and start a new output directory to map it again. |
-| Nearly every problem needs review | An unverified solution or a submission-wide integrity concern may affect many results. | Read each reason in `review_queue.md`, then inspect `solutions_manual.md` and the student's report flags. |
-| Transcript confidence is low | The model was uncertain about faint, blurry, rotated, or difficult handwriting. | Compare the transcript with the source page and obtain a clearer scan when possible. |
-| Correct answers receive unexpectedly low scores | The rubric may reward setup, units, or shown work rather than only the final value. | Review `rubric.md`; if the policy is wrong, supply a revised external rubric or rubric instruction with a new `--out` path. |
-| A model or reasoning change is rejected | The existing output directory was created with different settings. | Choose a new `--out` path for the changed settings. |
-| A run is slow or expensive | Model choice, reasoning effort, document size, and located work all affect usage. | Try a lower effort, a less expensive compatible model, or `--thinking off`; adjust `--max-workers` while respecting API limits. |
-
-## Current limitations
-
-- Grades are model judgments. Review every queued item and inspect a sample of
-  results that were not sent to the review queue.
-- Transcript confidence is a model self-assessment, not a measurement of scan
-  quality or a guarantee of correctness.
-- Zooming cannot recover detail missing from the source image.
-- Student identity comes from filenames and directory names, not page contents.
-- The workflow and prompts target physics and mathematics. Other subjects may
-  need different grading and validation rules.
-- Students are processed sequentially, although work within a stage may run in
-  parallel. Large classes must account for API rate limits.
-- The CLI writes files but does not include a custom viewer or gradebook
-  integration.
-
-Contributors should continue with the architecture guide's
-[system layers](architecture.md#system-layers),
-[programmatic integration](architecture.md#programmatic-integration), and
-[testing guidance](architecture.md#testing-the-architecture).
+Current limitations remain part of the release decision: confidence is a model
+self-assessment, grades are model judgments, the workflow is designed for
+physics and mathematics, there is no custom report viewer or gradebook
+integration, and large classes are sequential by student. Return to the
+[documentation index](README.md) for the other reader paths.
