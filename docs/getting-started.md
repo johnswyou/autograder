@@ -38,8 +38,9 @@ On Windows PowerShell, replace the activation command with
 
 ## 3. Understand the data and cost boundary
 
-Commands that need Claude send assignment or submission content to Anthropic's
-API and incur API charges. Confirm that your institution permits this use before
+Commands that need Claude send the assignment, student submissions, and any
+teacher solution or rubric material needed by that stage to Anthropic's API and
+incur API charges. Confirm that your institution permits this use before
 processing student data. The output directory also contains names,
 transcriptions, and grades, so protect it like the original submissions and do
 not commit it to a public repository.

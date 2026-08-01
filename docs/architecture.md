@@ -163,11 +163,13 @@ text/image results are appended as the next user message.
 A result crosses the agent boundary only when the model calls `submit_result`
 and `model_validate` succeeds. All artifact models forbid extra fields, so an
 unexpected wrapper or misspelled field cannot be silently accepted. A
-validation error is sent back as an error tool result for repair. If the model
-ends normally without a tool call, it receives at most two submit nudges.
-`max_tokens`, refusal, and model-context-window stop reasons fail immediately
-with targeted messages because a nudge cannot repair them. The task's turn
-limit bounds validation and tool repair loops.
+validation error is sent back as an error tool result for repair. Stop-reason
+handling applies when a response contains no tool use: an ordinary normal stop
+receives at most two submit nudges, while `max_tokens`, refusal, and
+model-context-window stop reasons fail immediately with targeted messages
+because a nudge cannot repair them. A response that contains tool calls follows
+the tool-dispatch or submission path even if its stop reason has one of those
+values. The task's turn limit bounds validation and tool repair loops.
 
 The Anthropic client is configured for up to six SDK retries of transient API
 failures. After the SDK gives up, `run_agent` raises `AgentError` with the stage,
@@ -446,17 +448,39 @@ to rebuild them.
 ```mermaid
 flowchart TD
   LOAD["Load saved stage"] --> VALID{"Pydantic-valid and<br/>--force absent?"}
-  VALID -- no --> REBUILD["Rebuild stage reached by this command"]
-  VALID -- yes --> FAILED{"Retryable failed entries?"}
+  VALID -- no --> BUILD["Run the normal build path;<br/>construct lazy client if accessed"]
+  BUILD --> REQUEST{"Does this path make a<br/>Messages request?"}
+  REQUEST -- no --> BUILT["Build result and atomically<br/>replace its artifact"]
+  REQUEST -- yes --> CREDENTIAL{"SDK request has a<br/>discoverable credential?"}
+  CREDENTIAL -- yes --> BUILT
+  CREDENTIAL -- no --> BOUNDARY["Apply the stage failure boundary:<br/>fatal, placeholder, or student isolation"]
+  VALID -- yes --> FAILED{"Stage-specific failed<br/>entries present?"}
   FAILED -- no --> REUSE["Reuse completed result"]
-  FAILED -- yes --> KEY{"API key available in RunConfig?"}
+  FAILED -- yes --> KEY{"RunConfig.api_key truthy?"}
   KEY -- no --> KEEP["Keep flagged unavailable entries"]
-  KEY -- yes --> RETRY["Retry failed IDs; keep successful siblings"]
-  RETRY --> SOLCHG{"Cached solution manual changed?"}
+  KEY -- yes --> KIND{"Which cached stage?"}
+  KIND -- "transcripts / grades" --> ITEM["Retry failed IDs; merge<br/>successful siblings"]
+  ITEM --> ITEMSAVE["Re-aggregate grades as needed;<br/>replace repaired artifact"]
+  KIND -- solutions --> SOL["Regenerate failed IDs and<br/>transitive dependents"]
+  SOL --> SOLCHG{"Solution manual changed?"}
+  SOLCHG -- no --> SOLKEEP["Keep existing dependent artifacts"]
   SOLCHG -- yes --> INVALIDATE["Delete rubric, grades, reports,<br/>class outputs, and manifest"]
-  SOLCHG -- no --> SAVE["Atomically replace repaired artifact"]
-  INVALIDATE --> SAVE
+  INVALIDATE --> SOLSAVE["Replace repaired solutions artifact"]
 ```
+
+A missing or invalid stage takes the normal build branch. Stage code constructs
+the lazy `Pipeline.client` when it accesses that property, but deterministic
+paths such as structured-input parsing or no-work short circuits need not make
+a Messages request. `make_client` passes an explicit configuration key when
+one exists; otherwise it constructs the Anthropic client without one and lets
+the SDK perform its normal environment discovery. If a required request has no
+discoverable credential, its `AgentError` follows the ordinary stage boundary
+described below: it may stop an assignment/rubric stage, become a failed
+solution/transcript/grade entry, or isolate a whole student. Cached failed-entry
+retry is intentionally a different branch: the orchestrator checks
+`RunConfig.api_key` directly and does not construct the client when that field
+is falsey. The CLI normally copies `ANTHROPIC_API_KEY` into that field;
+programmatic callers should do the same when they want cached failures retried.
 
 A cached solution whose verifier notes start with `AGENT_FAILURE` is retried
 with every transitive dependent solution. If that repaired manual changes,
@@ -470,6 +494,9 @@ IDs, then merged with completed siblings and re-aggregated. With no API key in
 `RunConfig`, flagged placeholders remain and the manifest records a warning.
 An unverified generated solution that exhausted evaluator rounds is complete,
 not an `AGENT_FAILURE`, so ordinary resume does not regenerate it.
+The stage selectors use the `AGENT_FAILURE` note prefix for solutions and
+`ProcessingStatus.failed` for transcripts and grades; they do not filter these
+entries through `ArtifactFailure.retryable`.
 
 `--force` bypasses `_load_or` for every stage reached by the chosen public
 entry point. It never relaxes assignment, configuration, or input binding. It
@@ -620,7 +647,20 @@ method.
 ## Testing the architecture
 
 The suite is offline: synthetic PDFs/images and scripted Anthropic clients run
-through the production schemas and loops without a network call. Use the
+through the production schemas and loops without a network call. From the
+repository root, install the test and CI-pinned quality tools and run the same
+boundaries as continuous integration:
+
+```bash
+python -m pip install -e . pytest "ruff==0.16.0" "mypy==2.3.0"
+python -m pytest tests/ -q
+python -m ruff check autograder/ scripts/ tests/
+python -m mypy autograder/ scripts/
+```
+
+Ruff checks source, scripts, and tests; mypy checks source and scripts. Their
+rule sets live in [`pyproject.toml`](../pyproject.toml), and their versions are
+pinned in CI so a tool release cannot change an unrelated pull request. Use the
 focused tests by boundary:
 
 - `tests/test_ingest_tools.py` for page rendering, crops, rotation, pixel guards,

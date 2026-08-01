@@ -178,8 +178,10 @@ deterministically. Criteria that sum to a different amount are rescaled
 proportionally to the authoritative problem weight; an empty criterion list is
 replaced by one full-credit criterion; duplicate criterion IDs are renamed;
 unknown problem entries are dropped; and the rubric total is recomputed. These
-repairs and coverage warnings appear in `run_manifest.json`. Review
-`rubric.md` for the resulting policy, not only the source rubric.
+repairs are reflected in `rubric.md`. Coverage gaps and discrepancies detected
+before normalization also appear as issues in `run_manifest.json`, but not
+every normalization repair creates a manifest issue. Review the resulting
+`rubric.md`, not only the source rubric.
 
 ## Grade the prepared roster
 

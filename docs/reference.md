@@ -65,10 +65,17 @@ live parser; automatic `argparse` help actions are explicitly excluded.
 
 ### Material option interactions
 
-- API-key resolution is `--api-key` when it is nonempty, then
-  `ANTHROPIC_API_KEY`. A missing key only produces a warning at startup because
-  a fully cached command can finish without a client. The command fails later
-  if a model call is required.
+- CLI API-key resolution is `--api-key` when it is nonempty, then
+  `ANTHROPIC_API_KEY`; either value is copied into `RunConfig.api_key`. A
+  missing key only produces a warning at startup because a fully cached command
+  can finish without a client. If a missing or invalid stage needs a model
+  request, lazy client construction lets the Anthropic SDK perform its normal
+  credential discovery. With none available, the request error follows the
+  stage's ordinary boundary: the command may stop, persist a per-item failure,
+  or isolate one student. Cached failed-entry retries use a narrower guard:
+  they require a truthy `RunConfig.api_key` without constructing the client.
+  Programmatic callers that rely on SDK environment discovery should therefore
+  populate the field explicitly when cached failures must be retried.
 - `--max-tokens N` sets `max_tokens = max(32768, N)` and
   `big_max_tokens = max(32768, N)`. Programmatic callers can set the two fields
   independently.
@@ -146,10 +153,11 @@ Within a multi-file student submission, files are concatenated in natural
 order and the ordered names and contents bind the run.
 
 Student IDs are converted to safe artifact directory slugs by replacing unsafe
-character runs with `_`, trimming leading dots, and using `student` if nothing
-remains. On a collision, discovery renames the later student ID itself with
-`_2`, `_3`, and so on until its slug is unique. That suffixed ID appears in
-reports and models, and its safe form names `students/<slug>/`.
+character runs with `_`, stripping leading and trailing underscores, then
+stripping leading dots, and using `student` if nothing remains. On a collision,
+discovery renames the later student ID itself with `_2`, `_3`, and so on until
+its slug is unique. That suffixed ID appears in reports and models, and its safe
+form names `students/<slug>/`.
 
 ## Teacher solution JSON
 
@@ -204,7 +212,7 @@ in a `Solution` with these fields:
 | `unverified_dependencies` | Leaf IDs whose trust blocks this entry |
 | `verifier_notes` | Optional rejection, mismatch, dependency, or agent-failure detail |
 | `provenance` | `generated`, `provided`, or `provided_unverified` |
-| `rounds` | Solver/evaluator attempts consumed; `solution_max_rounds + 1` attempts are possible |
+| `rounds` | One-based solver/evaluator round number reached for generated drafts. Supplied entries and solver-failure placeholders use the default `0`, so this is not a count of attempted API calls; values can reach `solution_max_rounds + 1` |
 
 Missing answers are generated unless strict mode stops the command. Generated
 answers receive one initial solver/evaluator attempt plus up to
@@ -343,7 +351,7 @@ clamped; farther-out values are invalid. Reversed corners are reordered.
 | `StudentGrade` | `student_id`; nullable `total_awarded`; `total_possible`; `processed_awarded`; `processed_possible`; `score_complete`; OCR mean/min; `problems` mapping; `flags` |
 | `ProblemGrade` | `problem_id`; work `status`; nullable `awarded`; `possible`; `criteria`; `feedback`; grader `confidence`; `needs_review`; optional `review_reason`; `integrity_flags`; optional `ocr_confidence`; optional `location_note`; `processing_status`; optional `failure`; saved `intrinsic_review_reasons` |
 | `CriterionScore` | `criterion_id`; bounded `awarded`; rubric-derived `possible`; evidence `justification` |
-| `ArtifactFailure` | Failing `stage`; `message`; `retryable` flag |
+| `ArtifactFailure` | Failing `stage`; `message`; `retryable` metadata flag. Current resume selectors do not consult that flag |
 
 Completed transcripts cannot have failures. Failed transcripts have empty text
 and zero confidence. Completed problem grades have an award and no failure;
@@ -394,8 +402,9 @@ Unattributed work adds context to a `not_found` review reason.
 
 `ProcessingStatus.complete` means a transcript or problem grade is available.
 `ProcessingStatus.failed` means the corresponding `ArtifactFailure` is present
-and the item is eligible for retry on a compatible cached rerun. Successful
-sibling problem results remain reusable.
+and the item is selected for retry on a compatible cached rerun, regardless of
+the current `retryable` metadata value. Successful sibling problem results
+remain reusable.
 
 A student score is final only when every problem grade is complete:
 
@@ -463,11 +472,13 @@ also encounter a new student name, so adding or removing roster members is not
 reliably rejected; use a new output directory for any roster change.
 
 Without `--force`, a saved stage is reused only when its file exists and
-validates against its Pydantic model. Missing or invalid files are rebuilt.
-Failed per-problem solution-agent, transcription, and grading placeholders are
-retried when a key is available; without a key they remain flagged. Successful
-sibling results are retained. Repaired solutions invalidate dependent rubric
-and grade artifacts while mappings and transcripts remain reusable.
+validates against its Pydantic model. Missing or invalid files are rebuilt and
+request the lazy client when they reach model work. Failed per-problem
+solution-agent, transcription, and grading placeholders follow the separate
+cached-retry guard: a truthy `RunConfig.api_key` retries them, while a falsey
+field keeps them flagged. Successful sibling results are retained. Repaired
+solutions invalidate dependent rubric and grade artifacts while mappings and
+transcripts remain reusable.
 
 Everything that binds the run appears as `yes` in the configuration tables
 below. Worker count, API key, prompt caching, review thresholds, force, and

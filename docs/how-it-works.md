@@ -176,9 +176,10 @@ These outcomes deliberately mean different things:
 | Low confidence | The completed score remains present. Low transcript confidence means the visual reading may be wrong; low grader confidence means the rubric judgment may be wrong. | Queued when confidence is below the configured threshold. Low confidence is not silently converted to zero. |
 | `needs_review` | Usually preserves the completed score; a failed result remains unavailable. | This is a routing flag, not a new work status. It can be triggered by confidence, illegibility, model uncertainty, integrity signals, unverified solutions, or deterministic validation concerns. |
 
-A clean zero is evidence that no answer was supplied. An unavailable score is
-evidence that the system could not finish. A review flag says a person must make
-or confirm the decision; it does not by itself erase a completed score.
+A clean `blank` zero is evidence that no answer was supplied. A `not_found`
+zero is provisional evidence that no answer was located. An unavailable score
+is evidence that the system could not finish. A review flag says a person must
+make or confirm the decision; it does not by itself erase a completed score.
 
 For the hands-on path, return to [Getting started](getting-started.md). For
 operational decisions and exact options, use [Usage](usage.md) and

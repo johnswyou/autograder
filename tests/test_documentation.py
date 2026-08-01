@@ -209,6 +209,39 @@ def _assert_runconfig_field_contract(rows: list[dict[str, str]]) -> None:
     )
 
 
+def _document_format_suffixes(
+    rows: list[dict[str, str]], source: str
+) -> set[str]:
+    return {
+        suffix
+        for row in rows
+        if source in re.findall(r"`([^`]+)`", row["Source constants"])
+        for suffix in re.findall(r"`(\.[a-z]+)`", row["Suffix"])
+    }
+
+
+def _assert_document_format_contract(rows: list[dict[str, str]]) -> None:
+    expected = {
+        "SUPPORTED_EXTS": SUPPORTED_EXTS,
+        "IMAGE_EXTS": IMAGE_EXTS,
+        "TEXT_EXTS": TEXT_EXTS,
+    }
+    documented_sources = {
+        source
+        for row in rows
+        for source in re.findall(r"`([^`]+)`", row["Source constants"])
+    }
+    documented = {
+        source: _document_format_suffixes(rows, source)
+        for source in documented_sources
+    }
+
+    assert documented == expected, (
+        "document-format constant drift; expected "
+        f"{expected}, documented {documented}"
+    )
+
+
 def _heading_anchors(text: str) -> set[str]:
     anchors: set[str] = set()
     occurrences: dict[str, int] = {}
@@ -352,17 +385,19 @@ def test_reference_runconfig_tables_catch_cache_binding_drift() -> None:
 def test_reference_document_format_table_catches_ingestion_constant_drift() -> None:
     rows = _marked_table(_reference_text(), "document-formats")
 
-    def suffixes(source: str) -> set[str]:
-        return {
-            suffix
-            for row in rows
-            if source in row["Source constants"]
-            for suffix in re.findall(r"`(\.[a-z]+)`", row["Suffix"])
-        }
+    _assert_document_format_contract(rows)
 
-    assert suffixes("SUPPORTED_EXTS") == SUPPORTED_EXTS
-    assert suffixes("IMAGE_EXTS") == IMAGE_EXTS
-    assert suffixes("TEXT_EXTS") == TEXT_EXTS
+
+def test_document_format_contract_rejects_a_stale_constant_name() -> None:
+    rows = [dict(row) for row in _marked_table(_reference_text(), "document-formats")]
+    for row in rows:
+        row["Source constants"] = row["Source constants"].replace(
+            "`SUPPORTED_EXTS`",
+            "`SUPPORTED_EXTS`, `STALE_SUPPORTED_EXTS_SUFFIX`",
+        )
+
+    with pytest.raises(AssertionError, match="document-format constant drift"):
+        _assert_document_format_contract(rows)
 
 
 def test_reference_solution_json_example_matches_the_accepted_parser_shape(
