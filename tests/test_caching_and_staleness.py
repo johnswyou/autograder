@@ -1,5 +1,4 @@
-"""Offline tests for prompt-cache breakpoints, tool-image eviction,
-cache-aware usage metering, and immutable run-input binding."""
+"""Offline tests for OpenRouter usage metering, tool-image eviction, and run-input binding."""
 
 from __future__ import annotations
 
@@ -9,91 +8,35 @@ from pathlib import Path
 import pytest
 
 from autograder.config import RunConfig
-from autograder.llm import SUBMIT_TOOL_NAME, UsageMeter, _evict_stale_images, _move_cache_marker, run_agent
+from autograder.llm import SUBMIT_TOOL_NAME, Usage, UsageMeter, _evict_stale_images, run_agent
 from autograder.models import AssignmentSpec, Rubric, SolutionsManual
 from autograder.run_state import RunBindingError, RunState
 from autograder.tools import text_block
 
-from .conftest import make_stub_client, tool_use
+from .conftest import make_stub_client, tool_use, turn
 from .test_llm_models import Tiny, _task
-
-
-def _marked_blocks(messages) -> list[tuple[int, int]]:
-    out = []
-    for mi, m in enumerate(messages):
-        if m.get("role") != "user" or not isinstance(m.get("content"), list):
-            continue
-        for bi, b in enumerate(m["content"]):
-            if isinstance(b, dict) and "cache_control" in b:
-                out.append((mi, bi))
-    return out
-
-
-# -- prompt caching -------------------------------------------------------------
-
-
-def test_prompt_caching_breakpoints_single_turn(cfg: RunConfig):
-    client = make_stub_client([[tool_use(SUBMIT_TOOL_NAME, {"answer": "x", "score": 0.5})]])
-    run_agent(client, cfg, _task(), None)
-
-    # system carries the tools+system breakpoint
-    sys1 = client.calls[0]["system"]
-    assert isinstance(sys1, list) and sys1[0]["cache_control"] == {"type": "ephemeral"}
-
-    # the rolling marker sits on the last block of the initial user message
-    m = client.calls[0]["messages"]
-    assert _marked_blocks(m) == [(0, len(m[0]["content"]) - 1)]
-
-
-def test_prompt_caching_marker_moves_across_turns(cfg: RunConfig):
-    client = make_stub_client([
-        [tool_use(SUBMIT_TOOL_NAME, {"answer": "x"})],                 # invalid -> repair turn
-        [tool_use(SUBMIT_TOOL_NAME, {"answer": "x", "score": 0.5})],
-    ])
-    run_agent(client, cfg, _task(), None)
-
-    # the stub records a reference to the live messages list, so both calls see
-    # its final state: exactly ONE marker, on the last (tool_result) user message
-    m = client.calls[1]["messages"]
-    marks = _marked_blocks(m)
-    last_user = max(i for i, msg in enumerate(m) if msg.get("role") == "user")
-    assert len(marks) == 1 and marks[0][0] == last_user
-    assert m[last_user]["content"][-1]["type"] == "tool_result"
-
-
-def test_prompt_caching_can_be_disabled(cfg: RunConfig):
-    cfg.prompt_caching = False
-    client = make_stub_client([[tool_use(SUBMIT_TOOL_NAME, {"answer": "a", "score": 1})]])
-    run_agent(client, cfg, _task(), None)
-    assert isinstance(client.calls[0]["system"], str)
-    assert _marked_blocks(client.calls[0]["messages"]) == []
-
 
 # -- image eviction ---------------------------------------------------------------
 
 
 def _image_block() -> dict:
-    return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "x"}}
+    return {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,eA=="}}
 
 
 def test_evict_stale_images_unit():
-    def tool_result(n_images: int) -> dict:
-        return {"type": "tool_result", "tool_use_id": "t",
-                "content": [_image_block() for _ in range(n_images)]}
-
     messages = [
-        {"role": "user", "content": [text_block("task"), _image_block()]},   # initial: untouched
-        {"role": "assistant", "content": []},
-        {"role": "user", "content": [tool_result(2)]},
-        {"role": "assistant", "content": []},
-        {"role": "user", "content": [tool_result(2)]},
+        {"role": "user", "content": [text_block("task"), _image_block()]},
+        {"role": "assistant", "content": None},
+        {"role": "tool", "tool_call_id": "a", "content": [_image_block(), _image_block()]},
+        {"role": "assistant", "content": None},
+        {"role": "tool", "tool_call_id": "b", "content": [_image_block(), _image_block()]},
     ]
     _evict_stale_images(messages, max_tool_images=1)
-    assert messages[0]["content"][1]["type"] == "image"          # initial context kept
-    imgs = [b["type"] for b in messages[2]["content"][0]["content"]]
-    assert imgs == ["text", "text"]                              # oldest evicted
-    imgs = [b["type"] for b in messages[4]["content"][0]["content"]]
-    assert imgs == ["text", "image"]                             # newest kept
+    assert messages[0]["content"][1]["type"] == "image_url"
+    imgs = [b["type"] for b in messages[2]["content"]]
+    assert imgs == ["text", "text"]  # oldest evicted
+    imgs = [b["type"] for b in messages[4]["content"]]
+    assert imgs == ["text", "image_url"]  # newest kept
 
 
 def test_eviction_in_agent_loop(cfg: RunConfig, tiny_pdf: Path):
@@ -102,42 +45,58 @@ def test_eviction_in_agent_loop(cfg: RunConfig, tiny_pdf: Path):
 
     cfg.max_tool_images = 1
     doc = Document.from_path(tiny_pdf, "assignment")
-    client = make_stub_client([
-        [tool_use("view_page", {"doc": "assignment", "page": 1}, id="t1")],
-        [tool_use("view_page", {"doc": "assignment", "page": 2}, id="t2")],
-        [tool_use(SUBMIT_TOOL_NAME, {"answer": "done", "score": 1.0})],
-    ])
-    out = run_agent(client, cfg, _task(
-        toolkit=ToolKit({"assignment": doc}, cfg),
-        tool_names=("view_page",),
-    ), None)
+    client = make_stub_client(
+        [
+            [tool_use("view_page", {"doc": "assignment", "page": 1}, id="t1")],
+            [tool_use("view_page", {"doc": "assignment", "page": 2}, id="t2")],
+            [tool_use(SUBMIT_TOOL_NAME, {"answer": "done", "score": 1.0})],
+        ]
+    )
+    out = run_agent(
+        client,
+        cfg,
+        _task(
+            toolkit=ToolKit({"assignment": doc}, cfg),
+            tool_names=("view_page",),
+        ),
+        None,
+    )
     doc.close()
     assert isinstance(out, Tiny)
-    final_messages = client.calls[2]["messages"]
-    first_tr = final_messages[2]["content"][0]["content"]
-    second_tr = final_messages[4]["content"][0]["content"]
-    assert all(b.get("type") != "image" for b in first_tr)       # evicted
+    final_messages = client.calls[2].messages
+    first_tr = final_messages[3]["content"]
+    second_tr = final_messages[5]["content"]
+    assert all(b.get("type") != "image_url" for b in first_tr)  # evicted
     assert "removed to conserve context" in first_tr[-1]["text"]
-    assert any(b.get("type") == "image" for b in second_tr)      # newest kept
-
-
-def test_cache_marker_skips_non_dict_blocks():
-    messages = [{"role": "user", "content": "just a string"}]
-    _move_cache_marker(messages)                                  # must not raise
-    assert messages == [{"role": "user", "content": "just a string"}]
+    assert any(b.get("type") == "image_url" for b in second_tr)  # newest kept
 
 
 # -- metering ---------------------------------------------------------------------
 
 
 def test_usage_meter_counts_cache_tokens(cfg: RunConfig):
-    client = make_stub_client([[tool_use(SUBMIT_TOOL_NAME, {"answer": "a", "score": 1})]])
+    client = make_stub_client(
+        [
+            turn(
+                tool_use(SUBMIT_TOOL_NAME, {"answer": "a", "score": 1}),
+                usage=Usage(
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    reasoning_tokens=2,
+                    cached_prompt_tokens=7,
+                    cache_write_tokens=3,
+                    cost_usd=0.004,
+                ),
+            )
+        ]
+    )
     meter = UsageMeter()
     run_agent(client, cfg, _task(), meter)
     snap = meter.snapshot()
-    assert snap["cache_creation_input_tokens"] == 3
-    assert snap["cache_read_input_tokens"] == 7
-    assert snap["input_tokens"] == 10 and snap["output_tokens"] == 5
+    assert snap["cache_write_tokens"] == 3
+    assert snap["cached_prompt_tokens"] == 7
+    assert snap["prompt_tokens"] == 10 and snap["completion_tokens"] == 5
+    assert snap["reasoning_tokens"] == 2 and snap["cost_usd"] == pytest.approx(0.004)
 
 
 # -- immutable run-input binding ---------------------------------------------------
@@ -164,7 +123,9 @@ def test_open_rejects_version_one_dependency_trust_cache(tmp_path: Path):
 
 
 def test_pipeline_rejects_changed_assignment_before_cache_reuse(
-    tmp_path: Path, small_spec, tiny_pdf,
+    tmp_path: Path,
+    small_spec,
+    tiny_pdf,
 ):
     from autograder.orchestrator import Pipeline
     from autograder.report import save_json
@@ -214,7 +175,9 @@ def test_directory_hash_covers_exactly_the_files_that_are_ingested(tmp_path: Pat
 
 
 def test_pipeline_rejects_changed_model_before_cache_reuse(
-    tmp_path: Path, small_spec, tiny_pdf,
+    tmp_path: Path,
+    small_spec,
+    tiny_pdf,
 ):
     from autograder.orchestrator import Pipeline
     from autograder.report import save_json
@@ -229,7 +192,10 @@ def test_pipeline_rejects_changed_model_before_cache_reuse(
 
 
 def test_force_rebuilds_a_directory_created_without_it(
-    tmp_path: Path, small_spec, tiny_pdf, monkeypatch,
+    tmp_path: Path,
+    small_spec,
+    tiny_pdf,
+    monkeypatch,
 ):
     """``--force`` selects reuse, not artifact content, so it is not part of the
     binding: adding it to an existing directory must rebuild rather than be
@@ -246,9 +212,7 @@ def test_force_rebuilds_a_directory_created_without_it(
 
     forced = Pipeline(RunConfig(api_key=None, force=True), tiny_pdf, out)
     forced._client = object()
-    monkeypatch.setattr(
-        "autograder.orchestrator.build_spec", lambda *args: rebuilt
-    )
+    monkeypatch.setattr("autograder.orchestrator.build_spec", lambda *args: rebuilt)
 
     result = forced.stage_spec()
     forced.assignment.close()
@@ -257,7 +221,10 @@ def test_force_rebuilds_a_directory_created_without_it(
 
 
 def test_dropping_force_resumes_instead_of_being_rejected(
-    tmp_path: Path, small_spec, tiny_pdf, monkeypatch,
+    tmp_path: Path,
+    small_spec,
+    tiny_pdf,
+    monkeypatch,
 ):
     """The reverse direction: a directory built under ``--force`` stays reusable
     once the flag is dropped, so an interrupted forced run can resume."""
@@ -282,7 +249,10 @@ def test_dropping_force_resumes_instead_of_being_rejected(
 
 
 def test_force_bound_reopen_rebuilds_cached_spec(
-    tmp_path: Path, small_spec, tiny_pdf, monkeypatch,
+    tmp_path: Path,
+    small_spec,
+    tiny_pdf,
+    monkeypatch,
 ):
     from autograder.orchestrator import Pipeline
     from autograder.report import save_json
@@ -310,13 +280,13 @@ def test_force_bound_reopen_rebuilds_cached_spec(
 
     assert result == rebuilt
     assert calls == [client]
-    assert AssignmentSpec.model_validate_json(
-        (out / "assignment_spec.json").read_text(encoding="utf-8")
-    ) == rebuilt
+    assert AssignmentSpec.model_validate_json((out / "assignment_spec.json").read_text(encoding="utf-8")) == rebuilt
 
 
 def test_stage_solutions_rejects_changed_key_before_loading_cache(
-    tmp_path: Path, small_spec, tiny_pdf,
+    tmp_path: Path,
+    small_spec,
+    tiny_pdf,
 ):
     from autograder.orchestrator import Pipeline
     from autograder.report import save_json
@@ -341,7 +311,10 @@ def test_stage_solutions_rejects_changed_key_before_loading_cache(
 
 @pytest.mark.parametrize("change", ["rubric", "prompt"])
 def test_stage_rubric_rejects_changed_rubric_or_prompt_before_loading_cache(
-    tmp_path: Path, small_spec, tiny_pdf, change: str,
+    tmp_path: Path,
+    small_spec,
+    tiny_pdf,
+    change: str,
 ):
     from autograder.orchestrator import Pipeline
     from autograder.report import save_json
@@ -369,7 +342,9 @@ def test_stage_rubric_rejects_changed_rubric_or_prompt_before_loading_cache(
 
 
 def test_run_grade_rejects_changed_submission_before_paid_stage(
-    tmp_path: Path, tiny_pdf, monkeypatch,
+    tmp_path: Path,
+    tiny_pdf,
+    monkeypatch,
 ):
     from autograder.orchestrator import Pipeline, _files_digest
 
@@ -417,7 +392,9 @@ def test_force_does_not_override_binding_mismatch(tmp_path: Path, small_spec, ti
 
 
 def test_identical_inputs_reuse_existing_artifact_without_api_key(
-    tmp_path: Path, small_spec, tiny_pdf,
+    tmp_path: Path,
+    small_spec,
+    tiny_pdf,
 ):
     from autograder.orchestrator import Pipeline
     from autograder.report import save_json

@@ -50,7 +50,8 @@ contained by the assignment, solutions, rubric, or any submission path. In
 particular, never put it inside the submissions directory. An existing
 nonempty directory without a supported `run_binding.json` cannot be adopted.
 
-Commands that make model calls send content to Anthropic and incur API charges.
+Commands that make model calls send content through OpenRouter to the selected
+provider and incur API charges.
 Confirm the data policy and cost boundary before using real student work; see
 [Protect student data at the point of use](#protect-student-data-at-the-point-of-use).
 
@@ -350,8 +351,8 @@ looser threshold would flag.
 ## Manage cost, latency, and concurrency
 
 **Choose model quality and reasoning settings before binding the output
-directory, then control concurrency to fit your API limits.** Model, thinking,
-effort, and output-token changes require a fresh directory; worker count does
+directory, then control concurrency to fit your API limits.** Model, reasoning
+effort, privacy routing, and output-token changes require a fresh directory; worker count does
 not.
 
 Cost is concentrated as follows:
@@ -366,31 +367,32 @@ Cost is concentrated as follows:
   transcription, and grading stages use up to the configured worker count.
 
 More workers can reduce wall time but increase simultaneous requests and rate
-pressure; it does not reduce total logical work. Adaptive reasoning and higher
-effort can improve difficult judgments while increasing latency or token use;
-disabled reasoning or lower effort can be cheaper but may reduce quality. The
+pressure; it does not reduce total logical work. Higher reasoning effort can
+improve difficult judgments while increasing latency or token use; lower or
+disabled reasoning can be cheaper but may reduce quality. The
 selected model must support image input, tool use, and the requested reasoning
 controls.
 
-Prompt caching is enabled in the standard configuration and can reduce repeated
-input-token cost within multi-turn agents. Disable it only for debugging or an
-account/model incompatibility. Each agent retains a bounded number of tool
+Automatic prompt caching is handled by OpenRouter and the selected provider
+and can reduce repeated input-token cost within multi-turn agents. Each agent
+uses a sticky session ID and retains a bounded number of tool
 images and can request an evicted crop again. `run_manifest.json` separates API
-calls, ordinary input, cache-write, cache-read, and output tokens for the
-current command invocation only; it does not combine usage from earlier
-resumptions.
+calls, prompt, completion, reasoning, cached-prompt, cache-write, and cost
+fields for the current command invocation only. It also separates the requested
+model from resolved models and providers; it does not combine usage from
+earlier resumptions.
 
 ## Protect student data at the point of use
 
 **Confirm institutional permission before the first live call, and secure both
 inputs and outputs for the life of the run.** Assignment pages, student
-submissions, and relevant teacher materials are sent to Anthropic whenever a
-required stage calls the model. The output directory contains student IDs,
+submissions, and relevant teacher materials are sent through OpenRouter whenever
+a required stage calls the model. The output directory contains student IDs,
 source paths, transcriptions, grades, and review evidence. Keep it out of public
 repositories and broadly shared folders, apply your normal retention rules,
 and restrict access like the original submissions.
 
-Prefer `ANTHROPIC_API_KEY` in the process environment over repeating a key on
+Prefer `OPENROUTER_API_KEY` in the process environment over repeating a key on
 the command line, subject to your institution's secret-handling policy. The key
 is not written into run artifacts. A cached-only command needs no key.
 
@@ -415,7 +417,7 @@ PyMuPDF fits its AGPL or commercial licensing terms.
 artifacts before rerunning.** Resume only when the grading identity is
 unchanged; otherwise use a new output directory.
 
-- **No API key:** Cached results can still be read. Set `ANTHROPIC_API_KEY` or
+- **No API key:** Cached results can still be read. Set `OPENROUTER_API_KEY` or
   provide a key if a model call or failed-item retry is required.
 - **No gradable problems:** Confirm that the blank assignment is readable and
   contains the questions. Improve the source and start with a new output

@@ -38,8 +38,8 @@ On Windows PowerShell, replace the activation command with
 
 ## 3. Understand the data and cost boundary
 
-Commands that need Claude send the assignment, student submissions, and any
-teacher solution or rubric material needed by that stage to Anthropic's API and
+Commands that need a model send the assignment, student submissions, and any
+teacher solution or rubric material needed by that stage through OpenRouter and
 incur API charges. Confirm that your institution permits this use before
 processing student data. The output directory also contains names,
 transcriptions, and grades, so protect it like the original submissions and do
@@ -48,12 +48,12 @@ not commit it to a public repository.
 Set the key in the current shell without printing it:
 
 ```bash
-export ANTHROPIC_API_KEY="replace-with-your-key"
-test -n "$ANTHROPIC_API_KEY" && echo "Anthropic API key is set"
+export OPENROUTER_API_KEY="replace-with-your-key"
+test -n "$OPENROUTER_API_KEY" && echo "OpenRouter API key is set"
 ```
 
-This creates no project files. Success is the message `Anthropic API key is
-set`; it confirms only that the variable is nonempty. Anthropic validates the
+This creates no project files. Success is the message `OpenRouter API key is
+set`; it confirms only that the variable is nonempty. OpenRouter validates the
 key on the first live call. The autograder does not write the key to its output
 directory.
 
@@ -61,13 +61,26 @@ You may instead pass `--api-key` to each command, but an environment variable
 keeps the key out of repeated autograder command lines and process listings.
 Follow your institution's normal secret-handling rules for shell history.
 
+The default model is the dynamic `openrouter/auto-beta` router. It can resolve
+to different models or providers as availability changes. For reproducible or
+high-stakes grading, choose a fixed OpenRouter slug, for example
+`--model openai/gpt-5.1`. Each agent loop reuses one nonempty session ID so its
+dynamic model/provider choice stays sticky across repair and tool turns.
+OpenRouter and providers handle automatic prompt caching; there is no caching
+switch or repository-specific cache marker.
+
+Provider routing allows fallbacks and requires support for every requested
+parameter. It requires zero data retention and denies provider data collection
+by default. `--allow-data-retention` and `--allow-data-collection` are explicit
+privacy opt-outs; use either only after institutional review.
+
 ## 4. Generate the synthetic assignment
 
 ```bash
 python examples/generate_sample.py
 ```
 
-This is local-only: it makes no Anthropic request and creates:
+This is local-only: it makes no OpenRouter request and creates:
 
 ```text
 examples/sample/sample_assignment.pdf
@@ -79,7 +92,7 @@ those assignment and submissions paths. Jordan's four-page submission includes
 an inserted blank page, work continued on an extra page, one omitted answer,
 and an answer written under the wrong problem number.
 
-If you only wanted to prepare inputs without sending anything to Anthropic,
+If you only wanted to prepare inputs without sending anything to OpenRouter,
 stop here. The next command is the first paid API call.
 
 ## 5. Inspect how the assignment was understood
@@ -90,7 +103,7 @@ autograder inspect \
     --out runs/sample-demo
 ```
 
-Claude receives rendered pages of the blank assignment and returns its problem
+The selected model receives rendered pages of the blank assignment and returns its problem
 structure. Python validates and saves the result. This paid call creates:
 
 ```text
@@ -125,8 +138,8 @@ wrong.
 
 ## 6. Grade the sample
 
-This command performs paid Anthropic API calls. It sends the synthetic
-assignment and submission content to Claude, generates or checks a solutions
+This command performs paid OpenRouter API calls. It sends the synthetic
+assignment and submission content to the selected model, generates or checks a solutions
 manual and rubric, maps Jordan's work, transcribes it, and grades it:
 
 ```bash
@@ -214,6 +227,18 @@ Never place `--out` inside the assignment or submissions paths. When inputs or
 model-producing settings change, choose another output directory. For optional
 answer keys, rubrics, resume behavior, and all flags, continue to the
 [Usage guide](usage.md) and [Reference](reference.md).
+
+Run bindings use schema 3. Output directories created by an earlier transport
+or schema are rejected; choose a fresh `--out` directory rather than mixing
+their saved artifacts with a current OpenRouter run.
+
+If you are migrating an existing installation, replace
+`ANTHROPIC_API_KEY` with `OPENROUTER_API_KEY` and replace `--effort` with
+`--reasoning-effort`. The old `--thinking` switch is removed: omit the new
+option to use the selected model's default, or use `--reasoning-effort none`
+to request no reasoning. `--no-prompt-caching` is also removed because prompt
+caching is automatic at OpenRouter or the selected provider. Use a fresh
+`--out` directory after making this migration.
 
 To understand what happens between the PDF and the report, read
 [How it works](how-it-works.md). Return to the

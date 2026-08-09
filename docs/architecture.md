@@ -11,7 +11,7 @@ reader-level explanation, use [How it works](how-it-works.md).
 
 `autograder` enters [`cli.main`](../autograder/cli.py). The CLI parser checks
 syntax and local option ranges, `_to_config` constructs a `RunConfig` and reads
-`ANTHROPIC_API_KEY`, and `main` constructs one `Pipeline`. It then calls exactly
+`OPENROUTER_API_KEY`, and `main` constructs one `Pipeline`. It then calls exactly
 one command-level entry point:
 
 | CLI command | Public call | Last stage requested |
@@ -27,7 +27,7 @@ The command matrix and argument defaults live in
 `Pipeline.__init__` performs the first important boundary checks before any
 model client exists. It rejects overlap between the assignment and output,
 hashes the assignment, opens or creates `run_binding.json` through `RunState`,
-and opens the assignment as a page-oriented `Document`. The Anthropic client is
+and opens the assignment as a page-oriented `Document`. The OpenRouter client is
 lazy: a fully reusable call path never evaluates `Pipeline.client` and therefore
 does not need an API key. Every public `run_*` method closes the assignment in a
 `finally` block. `Pipeline.close()` is also public and idempotent.
@@ -55,7 +55,7 @@ same time while still parallelizing the expensive per-problem calls.
 
 ## Follow one visual answer from bytes to a grade
 
-The visual path is concrete. A PDF is not sent to Anthropic as a filename, and
+The visual path is concrete. A PDF is not sent to OpenRouter as a filename, and
 there is no separate OCR service hidden behind the pipeline.
 
 ```mermaid
@@ -64,8 +64,8 @@ flowchart LR
   D --> R["render_page / render_region"]
   R --> J["JPEG bytes"]
   J --> IB["image_block<br/>base64 + image/jpeg"]
-  IB --> MSG["Anthropic user content"]
-  MSG --> LOOP["llm.run_agent<br/>Messages stream + tools"]
+  IB --> MSG["OpenRouter user content"]
+  MSG --> LOOP["llm.run_agent<br/>Chat Completions stream + tools"]
   LOOP --> SUB["submit_result tool input"]
   SUB --> PYD["Pydantic result model"]
   PYD --> RULES["stage normalization / score rules"]
@@ -101,13 +101,13 @@ transpose, full conversion, or later rendering. Page-backed access is protected
 by a per-document reentrant lock because transcribers and graders share a
 `Document` across threads and PyMuPDF does not supply embedding locks.
 
-### 2. JPEG bytes become Anthropic image content
+### 2. JPEG bytes become OpenRouter image content
 
 [`tools.image_block`](../autograder/tools.py) uses standard base64 encoding and
 returns this request shape:
 
-`type=image`, `source.type=base64`, `source.media_type=image/jpeg`, and
-`source.data=<ASCII base64>`.
+`type=image_url` and an `image_url.url` beginning
+`data:image/jpeg;base64,`.
 
 `inline_pages` places up to the configured initial-page cap into the first user
 message and adds a notice telling the model to fetch later pages. `ToolKit`
@@ -145,7 +145,7 @@ Every rendered image also obeys `max_pixels`; raster sources obey
 `max_source_pixels`; raster zooms obey `max_upscale`. The canonical defaults are
 in [the `RunConfig` reference](reference.md#runconfig-reference).
 
-### 3. One shared Messages tool loop returns a typed result
+### 3. One shared Chat Completions tool loop returns a typed result
 
 Every stage creates an `AgentTask` and calls
 [`llm.run_agent`](../autograder/llm.py). The task supplies a system prompt,
@@ -153,39 +153,39 @@ initial user content, its allowed `ToolKit` methods, a Pydantic result type, an
 output-token budget, a turn limit, and a log context. `run_agent` adds a required
 `submit_result` tool whose input schema is `result_model.model_json_schema()`.
 
-The request uses the Anthropic Messages streaming interface
-(`client.messages.stream(...).get_final_message()`). Streaming avoids the SDK's
-estimated-duration ceiling for large output budgets while returning the normal
-Message shape. The loop preserves response content—including thinking blocks—
-as the next assistant message. Non-submit tool calls are dispatched and their
-text/image results are appended as the next user message.
+The request uses `OpenRouter.chat.send(..., stream=True)` as a context manager.
+The adapter assembles text, refusal, every SDK-known reasoning-detail variant,
+and fragmented function calls by their wire index into a plain replayable
+assistant message. If the SDK wraps a future reasoning-detail variant it cannot
+replay, the adapter fails the turn before any partial call is dispatched.
+Non-submit calls are dispatched and each result is appended as its own
+`role: tool` message.
 
 A result crosses the agent boundary only when the model calls `submit_result`
 and `model_validate` succeeds. All artifact models forbid extra fields, so an
 unexpected wrapper or misspelled field cannot be silently accepted. A
-validation error is sent back as an error tool result for repair. Stop-reason
-handling applies when a response contains no tool use: an ordinary normal stop
-receives at most two submit nudges, while `max_tokens`, refusal, and
-model-context-window stop reasons fail immediately with targeted messages
-because a nudge cannot repair them. A response that contains tool calls follows
-the tool-dispatch or submission path even if its stop reason has one of those
-values. The task's turn limit bounds validation and tool repair loops.
+validation error is sent back as an `ERROR:` tool message for repair. Finish-reason
+handling runs before local tool dispatch: `length`, `content_filter`, a nonempty
+refusal, an in-band stream error, and `error` or unknown terminal reasons fail
+immediately without executing partial tool calls. Only a clean `stop` with no
+tool calls receives at most two submit nudges. A response follows the
+tool-dispatch or submission path only when it has usable calls and its finish
+reason is exactly `tool_calls`. The task's turn limit bounds validation and tool
+repair loops.
 
-The Anthropic client is configured for up to six SDK retries of transient API
-failures. After the SDK gives up, `run_agent` raises `AgentError` with the stage,
-context, and turn. That API retry policy is distinct from solution regeneration
-rounds and from later resume of failed artifacts.
+The OpenRouter SDK owns transport retries. After the SDK or an in-band stream
+error, `run_agent` raises `AgentError` with the stage, context, and turn. That
+transport policy is distinct from solution regeneration and later resume.
 
-Prompt caching places an ephemeral breakpoint on the system/tool prefix and
-moves a second breakpoint to the last eligible user block as the conversation
-grows. A positive `max_tool_images` retains only that many tool-result images,
+Prompt caching is automatic at OpenRouter or the selected provider. A positive
+`max_tool_images` retains only that many tool-result images,
 replacing older ones with a text notice; the initial user images are never
 evicted. Setting it to zero disables eviction. Re-fetching an evicted view is
 always allowed.
 
-`UsageMeter` adds the usage returned by every completed Messages response under
-a lock, including ordinary input/output tokens and cache creation/read tokens.
-The final manifest reports the meter snapshot for the current command
+`UsageMeter` adds normalized usage returned by every completed response under
+a lock: prompt, completion, reasoning, cached-prompt, cache-write tokens, and
+OpenRouter cost, plus resolved model/provider identity. The final manifest reports the meter snapshot for the current command
 invocation only. Reusing an artifact has no historical usage attached, and a
 later resume does not add the previous manifest's counts.
 
@@ -271,7 +271,7 @@ is internally consistent.
 ### Student mapping
 
 [`mapping.map_student`](../autograder/mapping.py) runs one mapping agent task
-per student; that task may make multiple Messages API calls. It receives the
+per student; that task may make multiple Chat Completions calls. It receives the
 stable assignment inventory without blank-assignment answer regions, plus
 full-page submission context. Removing those regions is intentional: a scan or
 export may inset and rescale the original page, making the blank page's
@@ -396,7 +396,7 @@ the rules behind it.
 
 ### Run binding comes before reuse
 
-`RunState.open` creates strict schema-version-2 `run_binding.json` only in an
+`RunState.open` creates strict schema-version-3 `run_binding.json` only in an
 empty output directory. It binds the directory to the assignment SHA-256 and
 the exact `RunConfig.cache_identity()` object. Command-level methods then bind
 the first value seen for the supplied/generated solutions, supplied/generated
@@ -404,7 +404,7 @@ rubric, rubric-prompt digest or `none`, and each encountered
 `submission:<slug>` digest. Student file digests include ordered filenames and
 contents because file order is page order.
 
-An existing directory must contain a readable, valid version-2 binding with an
+An existing directory must contain a readable, valid version-3 binding with an
 identical assignment and cache identity; unsupported versions, malformed
 bindings, and mismatches stop before reuse and require a fresh output path.
 Configuration mismatch errors name the differing fields.
@@ -415,7 +415,7 @@ submission path, or discovered student file is bound or opened, the pipeline
 also rejects an output path equal to, inside, or containing that input.
 
 `cache_identity()` excludes the API key and execution-only choices: worker
-count, prompt caching, verbosity, and `force`. It also excludes the two review
+count, verbosity, and `force`. It also excludes the two review
 thresholds because their comparisons are deterministically re-derived on every
 grade read. The authoritative field-by-field binding table is
 [Reference](reference.md#runconfig-reference).
@@ -450,7 +450,7 @@ to rebuild them.
 flowchart TD
   LOAD["Load saved stage"] --> VALID{"Pydantic-valid and<br/>--force absent?"}
   VALID -- no --> BUILD["Run the normal build path;<br/>construct lazy client if accessed"]
-  BUILD --> REQUEST{"Does this path make a<br/>Messages request?"}
+  BUILD --> REQUEST{"Does this path make a<br/>Chat Completions request?"}
   REQUEST -- no --> BUILT["Build result and atomically<br/>replace its artifact"]
   REQUEST -- yes --> CREDENTIAL{"SDK request has a<br/>discoverable credential?"}
   CREDENTIAL -- yes --> BUILT
@@ -472,15 +472,14 @@ flowchart TD
 A missing or invalid stage takes the normal build branch. Stage code constructs
 the lazy `Pipeline.client` when it accesses that property, but deterministic
 paths such as structured-input parsing or no-work short circuits need not make
-a Messages request. `make_client` passes an explicit configuration key when
-one exists; otherwise it constructs the Anthropic client without one and lets
-the SDK perform its normal environment discovery. If a required request has no
+a Chat Completions request. `make_client` passes the configured key to
+OpenRouter. If a required request has no
 discoverable credential, its `AgentError` follows the ordinary stage boundary
 described below: it may stop an assignment/rubric stage, become a failed
 solution/transcript/grade entry, or isolate a whole student. Cached failed-entry
 retry is intentionally a different branch: the orchestrator checks
 `RunConfig.api_key` directly and does not construct the client when that field
-is falsey. The CLI normally copies `ANTHROPIC_API_KEY` into that field;
+is falsey. The CLI normally copies `OPENROUTER_API_KEY` into that field;
 programmatic callers should do the same when they want cached failures retried.
 
 A cached solution whose verifier notes start with `AGENT_FAILURE` is retried
@@ -585,8 +584,8 @@ controls remain the instructor's responsibility.
 | [`orchestrator.py`](../autograder/orchestrator.py) | Public `Pipeline`, runtime stage order, reuse/retry, student isolation, dependency invalidation, final manifest timing. |
 | [`run_state.py`](../autograder/run_state.py) | Output/input separation, schema-versioned run binding, atomic file replacement. |
 | [`ingest.py`](../autograder/ingest.py) | Source discovery as documents, page/text access, rendering/cropping/rotation, image resource bounds, submission discovery. |
-| [`tools.py`](../autograder/tools.py) | Anthropic content blocks, inline-page selection, tool JSON schemas and dispatch. |
-| [`llm.py`](../autograder/llm.py) | Anthropic client, Messages tool loop, structured submission/repair, caching, image eviction, usage meter. |
+| [`tools.py`](../autograder/tools.py) | OpenRouter content parts, inline-page selection, function schemas and dispatch. |
+| [`llm.py`](../autograder/llm.py) | OpenRouter client, streamed Chat Completions loop, structured submission/repair, image eviction, usage meter. |
 | [`models.py`](../autograder/models.py) | Typed stage and artifact schemas, region/status/score availability validators. |
 | [`assignment.py`](../autograder/assignment.py) | Assignment-analysis prompt, `AssignmentSpec` normalization, downstream problem digests. |
 | [`solutions.py`](../autograder/solutions.py) | Key parsing, solver/evaluator loop, dependency trust/scheduling, solution manual rendering. |
@@ -615,9 +614,9 @@ from pathlib import Path
 from autograder.config import RunConfig
 from autograder.orchestrator import PartialGradeFailure, Pipeline
 
-api_key = os.environ.get("ANTHROPIC_API_KEY")
+api_key = os.environ.get("OPENROUTER_API_KEY")
 if not api_key:
-    raise RuntimeError("Set ANTHROPIC_API_KEY before starting a run that may call the model")
+    raise RuntimeError("Set OPENROUTER_API_KEY before starting a run that may call the model")
 
 pipeline = Pipeline(
     RunConfig(api_key=api_key),
@@ -647,7 +646,7 @@ method.
 
 ## Testing the architecture
 
-The suite is offline: synthetic PDFs/images and scripted Anthropic clients run
+The suite is offline: synthetic PDFs/images and scripted chat clients run
 through the production schemas and loops without a network call. From the
 repository root, install the test and CI-pinned quality tools and run the same
 boundaries as continuous integration:
@@ -667,7 +666,7 @@ focused tests by boundary:
 - `tests/test_ingest_tools.py` for page rendering, crops, rotation, pixel guards,
   mixed documents, locks, and tool behavior;
 - `tests/test_llm_models.py` and `tests/test_caching_and_staleness.py` for the
-  Messages loop, validation repair, stop reasons, SDK parameters, prompt cache,
+  Chat Completions loop, validation repair, finish reasons, SDK parameters,
   image eviction, metering, and binding identity;
 - `tests/test_pipeline_units.py`, `tests/test_points_per_page.py`, and
   `tests/test_failures_and_resume.py` for stage invariants, solution trust,

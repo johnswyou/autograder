@@ -123,6 +123,7 @@ class Pipeline:
         self.issues: list[Issue] = []
         self.started = datetime.now(timezone.utc)
         self._client = None
+        self._client_closed = False
 
     # -- plumbing -----------------------------------------------------------
 
@@ -134,8 +135,13 @@ class Pipeline:
         return self._client
 
     def close(self) -> None:
-        """Release the assignment document. Idempotent; every entry point calls it."""
-        self.assignment.close()
+        """Release the lazy chat client and assignment document exactly once."""
+        try:
+            if self._client is not None and not self._client_closed:
+                self._client.close()
+                self._client_closed = True
+        finally:
+            self.assignment.close()
 
     def _load_or(self, path: Path, model: type[M]) -> M | None:
         if self.cfg.force or not path.exists():
@@ -492,8 +498,10 @@ class Pipeline:
         write_manifest(self.out / "run_manifest.json", self.cfg,
                        {k: (Path(v) if v else None) for k, v in inputs.items()},
                        submissions, usage, self.started, self.issues, run_status)
-        log.info("API usage: %d call(s), %d input tokens (+%d cache-write, %d cache-read), "
-                 "%d output tokens",
-                 usage["api_calls"], usage["input_tokens"],
-                 usage["cache_creation_input_tokens"], usage["cache_read_input_tokens"],
-                 usage["output_tokens"])
+        log.info(
+            "OpenRouter usage: %d call(s), %d prompt tokens (+%d cache-write, %d cached), "
+            "%d completion tokens (%d reasoning), $%.6f",
+            usage["api_calls"], usage["prompt_tokens"], usage["cache_write_tokens"],
+            usage["cached_prompt_tokens"], usage["completion_tokens"],
+            usage["reasoning_tokens"], usage["cost_usd"],
+        )

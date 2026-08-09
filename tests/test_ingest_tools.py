@@ -337,15 +337,18 @@ def test_toolkit_dispatch(tiny_pdf: Path, cfg):
     kit = ToolKit({"assignment": doc}, cfg)
 
     specs = kit.specs(("view_page", "zoom", "read_text", "compute"))
-    assert {s["name"] for s in specs} == {"view_page", "zoom", "read_text", "compute"}
+    assert {s["function"]["name"] for s in specs} == {
+        "view_page", "zoom", "read_text", "compute",
+    }
+    assert all(s["type"] == "function" for s in specs)
 
     blocks, err = kit.dispatch("view_page", {"doc": "assignment", "page": 1})
     assert not err
-    assert any(b.get("type") == "image" for b in blocks)
+    assert any(b.get("type") == "image_url" for b in blocks)
 
     blocks, err = kit.dispatch("zoom", {"doc": "assignment", "page": 1, "bbox": [0, 0, 50, 20]})
     assert not err
-    assert any(b.get("type") == "image" for b in blocks)
+    assert any(b.get("type") == "image_url" for b in blocks)
 
     blocks, err = kit.dispatch("read_text", {"doc": "assignment", "page": 1})
     assert not err
@@ -462,9 +465,10 @@ def test_transcriber_crop_honors_region_rotate(tmp_path: Path, cfg):
     # the crop embedded in the transcriber's first message must show what the
     # rotate=90 view has at its top-left: the page's bottom-left (blue) quadrant
     import base64
-    content = client.calls[0]["messages"][0]["content"]
-    imgs = [b for b in content if isinstance(b, dict) and b.get("type") == "image"]
+    content = client.calls[0].messages[1]["content"]
+    imgs = [b for b in content if isinstance(b, dict) and b.get("type") == "image_url"]
     assert imgs, "no crop was embedded"
-    got = _center_quadrant(base64.b64decode(imgs[0]["source"]["data"]))
+    encoded = imgs[0]["image_url"]["url"].removeprefix("data:image/jpeg;base64,")
+    got = _center_quadrant(base64.b64decode(encoded))
     doc.close()
     assert got == "BL", f"crop used the wrong frame (got {got}, want BL)"

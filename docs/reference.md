@@ -49,13 +49,13 @@ the live parser; automatic `argparse` help actions are explicitly excluded.
 |---|---|---|---|---|---|---|---|---|
 | `all` | `--assignment`, `-a` | `assignment` | `1` | `store` | `any` | Existing supported file or directory path | `required` | Blank assignment. A directory contributes its supported files directly inside it. |
 | `all` | `--out`, `-o` | `out` | `1` | `store` | `any` | Directory path | `required` | Run output. It must be disjoint from every input and either new, empty, or compatibly bound. |
-| `all` | `--model` | `model` | `1` | `store` | `any` | Anthropic model ID string | `claude-sonnet-5` | Selects the model and binds cached content. The model must support the requested image, tool, thinking, and effort behavior. |
-| `all` | `--api-key` | `api_key` | `1` | `store` | `any` | Anthropic API key string | `null` | A nonempty option wins; otherwise `ANTHROPIC_API_KEY` is read. The key is not persisted or run-binding identity. |
+| `all` | `--model` | `model` | `1` | `store` | `any` | OpenRouter model slug | `openrouter/auto-beta` | Selects the requested model and binds cached content. Use a fixed slug such as `openai/gpt-5.1` for reproducible or high-stakes runs. |
+| `all` | `--api-key` | `api_key` | `1` | `store` | `any` | OpenRouter API key string | `null` | A nonempty option wins; otherwise `OPENROUTER_API_KEY` is read. The key is neither persisted nor part of run-binding identity. |
 | `all` | `--max-workers` | `max_workers` | `1` | `store` | `any` | Positive integer | `4` | Maximum concurrent model tasks inside a parallel stage. Students themselves are processed sequentially. |
 | `all` | `--max-tokens` | `max_tokens` | `1` | `store` | `any` | Positive integer | `null` | Raises both configured token limits. A value below either built-in limit has no effect. |
-| `all` | `--thinking` | `thinking` | `1` | `store` | `on, off` | `on`, `off` | `on` | Enables adaptive reasoning or requests disabled reasoning. Some model and effort combinations reject `off`. |
-| `all` | `--effort` | `effort` | `1` | `store` | `low, medium, high, xhigh, max` | `low`, `medium`, `high`, `xhigh`, `max` | `null` | Reasoning effort. Omission uses the model default. Compatibility is also checked when thinking is off. |
-| `all` | `--no-prompt-caching` | `no_prompt_caching` | `0` | `store_true` | `any` | Flag with no value | `false` | Inverts `RunConfig.prompt_caching` to false. It affects request cost behavior, not run identity. |
+| `all` | `--reasoning-effort` | `reasoning_effort` | `1` | `store` | `none, minimal, low, medium, high, xhigh, max` | One listed effort | `null` | Optional reasoning preference. Omission uses the selected model's default. |
+| `all` | `--allow-data-retention` | `allow_data_retention` | `0` | `store_true` | `any` | Flag with no value | `false` | Opts out of the default zero-data-retention routing requirement. |
+| `all` | `--allow-data-collection` | `allow_data_collection` | `0` | `store_true` | `any` | Flag with no value | `false` | Opts out of the default denial of providers that collect or train on request data. |
 | `all` | `--force` | `force` | `0` | `store_true` | `any` | Flag with no value | `false` | Rebuilds requested stages instead of loading saved artifacts. It cannot override a binding mismatch. |
 | `all` | `--verbose`, `-v` | `verbose` | `0` | `store_true` | `any` | Flag with no value | `false` | Enables debug logs. Ordinary caught exceptions are re-raised after logging, so a traceback is shown. |
 | `solve, rubric, grade` | `--solutions`, `-s` | `solutions` | `1` | `store` | `any` | Supported document or JSON path | `null` | Omission generates solutions. A supplied key is checked for coverage; JSON and documents have different matching behavior. |
@@ -72,11 +72,11 @@ the live parser; automatic `argparse` help actions are explicitly excluded.
 ### Material option interactions
 
 - CLI API-key resolution is `--api-key` when it is nonempty, then
-  `ANTHROPIC_API_KEY`; either value is copied into `RunConfig.api_key`. A
+  `OPENROUTER_API_KEY`; either value is copied into `RunConfig.api_key`. A
   missing key only produces a warning at startup because a fully cached command
   can finish without a client. If a missing or invalid stage needs a model
-  request, lazy client construction lets the Anthropic SDK perform its normal
-  credential discovery. With none available, the request error follows the
+  request, lazy client construction reaches OpenRouter only when needed. With
+  none available, the request error follows the
   stage's ordinary boundary: the command may stop, persist a per-item failure,
   or isolate one student. Cached failed-entry retries use a narrower guard:
   they require a truthy `RunConfig.api_key` without constructing the client.
@@ -85,10 +85,13 @@ the live parser; automatic `argparse` help actions are explicitly excluded.
 - `--max-tokens N` sets `max_tokens = max(32768, N)` and
   `big_max_tokens = max(32768, N)`. Programmatic callers can set the two fields
   independently.
-- `--thinking off` is rejected up front for model IDs beginning
-  `claude-fable-` or `claude-mythos-`. Model IDs beginning `claude-opus-5`
-  reject disabled thinking with `xhigh` or `max` effort. Other model IDs are
-  left to the API as the authority.
+- OpenRouter routing always permits fallbacks and requires parameter support.
+  By default it also requires zero-data-retention endpoints and denies data
+  collection. The two `--allow-data-*` flags relax only their named privacy
+  requirements. One nonempty session ID is reused throughout each agent loop,
+  making dynamic model/provider routing sticky for that conversation.
+- Prompt caching is automatic at OpenRouter or the selected provider. There is
+  no cache-marker or cache-disable option.
 - `--verify-provided-solutions` affects only entries whose provenance begins
   `provided`. Generated gaps still follow the normal solver/evaluator loop.
   If an evaluator rejects a supplied answer it becomes unverified. If that
@@ -378,12 +381,46 @@ rows retain `total_possible` and any available leaf awards but leave
 score field blank. Text cells that could be spreadsheet formulas are prefixed
 with an apostrophe; numeric score cells remain numeric.
 
-`run_manifest.json` records `tool`, `tool_version`, `run_status`, UTC start and
-finish times, Python version, model, selected `config`, hashed `inputs`, hashed
-`submissions`, `issues`, and `usage`. Its run status is `complete` or
-`partial_failure`. Usage counts only the current invocation: API calls, input
-tokens, cache-creation input tokens, cache-read input tokens, and output tokens.
-The API key is never included.
+`run_manifest.json` records the exact top-level keys below. `requested_model`
+is the configured OpenRouter slug; `resolved_models` and `providers` are the
+sorted routing identities observed during this invocation. Its run status is
+`complete` or `partial_failure`. `usage` counts only the current invocation and
+uses normalized prompt, completion, reasoning, cached-prompt, cache-write, and
+cost fields. The API key, messages, and tool payloads are never included.
+
+<!-- manifest-key-contract:start -->
+```json
+{
+  "top_level": [
+    "config",
+    "finished_utc",
+    "inputs",
+    "issues",
+    "providers",
+    "python",
+    "requested_model",
+    "resolved_models",
+    "run_status",
+    "started_utc",
+    "submissions",
+    "tool",
+    "tool_version",
+    "usage"
+  ],
+  "usage": [
+    "api_calls",
+    "cache_write_tokens",
+    "cached_prompt_tokens",
+    "completion_tokens",
+    "cost_usd",
+    "prompt_tokens",
+    "providers",
+    "reasoning_tokens",
+    "resolved_models"
+  ]
+}
+```
+<!-- manifest-key-contract:end -->
 
 ## Statuses and score availability
 
@@ -455,11 +492,11 @@ an omitted known criterion does.
 ## Run binding and cache behavior
 
 `run_binding.json` is created before model work and has strict schema version
-`2`:
+`3`:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Exact supported binding schema, currently `2` |
+| `schema_version` | Exact supported binding schema, currently `3` |
 | `assignment_sha256` | Digest of the assignment file or direct supported files in its directory |
 | `config` | Exact `RunConfig.cache_identity()` object described below |
 | `inputs` | Incrementally recorded digests for `solutions`, `rubric`, `rubric_prompt`, and `submission:<slug>` |
@@ -487,7 +524,7 @@ solutions invalidate dependent rubric and grade artifacts while mappings and
 transcripts remain reusable.
 
 Everything that binds the run appears as `yes` in the configuration tables
-below. Worker count, API key, prompt caching, review thresholds, force, and
+below. Worker count, API key, review thresholds, force, and
 verbosity do not bind content. Threshold changes rederive review flags and
 rewrite reports and class files without another grading call. `--force` skips
 artifact reuse but is still subject to all binding checks.
@@ -519,16 +556,16 @@ mechanically.
 <!-- runconfig-public:start -->
 | Field | Default | Accepted override and relationship | Run binding |
 |---|---|---|---|
-| `model` | `claude-sonnet-5` | Model ID string; `--model` | yes |
-| `api_key` | `null` | String or null; CLI adds `ANTHROPIC_API_KEY` fallback | no |
+| `model` | `openrouter/auto-beta` | OpenRouter model slug; `--model` | yes |
+| `api_key` | `null` | String or null; CLI adds `OPENROUTER_API_KEY` fallback | no |
 | `max_workers` | `4` | Positive integer; `--max-workers` | no |
 | `max_tokens` | `32768` | Positive integer; standard agent output limit and one target of `--max-tokens` | yes |
 | `big_max_tokens` | `32768` | Positive integer; large submit-payload limit and the other target of `--max-tokens` | yes |
 | `review_confidence` | `0.6` | Float from 0 through 1; `--review-confidence` | no |
 | `ocr_review_threshold` | `0.5` | Float from 0 through 1; `--ocr-threshold` | no |
-| `thinking` | `on` | `on` or `off`; `--thinking` | yes |
-| `effort` | `null` | null, `low`, `medium`, `high`, `xhigh`, or `max`; `--effort` | yes |
-| `prompt_caching` | `true` | Boolean; inverted by `--no-prompt-caching` | no |
+| `reasoning_effort` | `null` | null, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; `--reasoning-effort` | yes |
+| `zero_data_retention` | `true` | Boolean; `--allow-data-retention` sets false | yes |
+| `allow_data_collection` | `false` | Boolean; `--allow-data-collection` sets true | yes |
 | `strict_rubric` | `false` | Boolean; `--strict-rubric` | yes |
 | `strict_solutions` | `false` | Boolean; `--strict-solutions` | yes |
 | `verify_provided_solutions` | `false` | Boolean; `--verify-provided-solutions` | yes |
@@ -560,9 +597,9 @@ marked `yes`; it intentionally omits settings that change credentials,
 execution mechanics, logging, or review routing without redefining saved
 content.
 
-The internal CLI conversion performs four derived mappings: it resolves the
-environment API key, raises both token fields, inverts prompt caching, and maps
-`ocr_threshold` to `ocr_review_threshold`. It only changes strict and
+The internal CLI conversion resolves the environment API key, raises both
+token fields, maps both privacy opt-outs, and maps `ocr_threshold` to
+`ocr_review_threshold`. It only changes strict and
 verification booleans when their flags are present. Programmatic construction
 does none of those name or inversion conversions.
 

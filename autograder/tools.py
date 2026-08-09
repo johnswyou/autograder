@@ -26,11 +26,10 @@ def text_block(t: str) -> Block:
 
 def image_block(jpeg_bytes: bytes) -> Block:
     return {
-        "type": "image",
-        "source": {
-            "type": "base64",
-            "media_type": "image/jpeg",
-            "data": base64.standard_b64encode(jpeg_bytes).decode("ascii"),
+        "type": "image_url",
+        "image_url": {
+            "url": "data:image/jpeg;base64,"
+            + base64.standard_b64encode(jpeg_bytes).decode("ascii"),
         },
     }
 
@@ -160,7 +159,18 @@ class ToolKit:
                 },
             },
         }
-        return [all_specs[n] for n in names if n in all_specs]
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": all_specs[name]["name"],
+                    "description": all_specs[name]["description"],
+                    "parameters": all_specs[name]["input_schema"],
+                },
+            }
+            for name in names
+            if name in all_specs
+        ]
 
     # -- dispatch ----------------------------------------------------------------
     def dispatch(self, name: str, args: dict) -> tuple[list[Block], bool]:
