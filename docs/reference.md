@@ -492,11 +492,11 @@ an omitted known criterion does.
 ## Run binding and cache behavior
 
 `run_binding.json` is created before model work and has strict schema version
-`2`:
+`3`:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Exact supported binding schema, currently `2` |
+| `schema_version` | Exact supported binding schema, currently `3` |
 | `assignment_sha256` | Digest of the assignment file or direct supported files in its directory |
 | `config` | Exact `RunConfig.cache_identity()` object described below |
 | `inputs` | Incrementally recorded digests for `solutions`, `rubric`, `rubric_prompt`, and `submission:<slug>` |

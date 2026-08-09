@@ -19,6 +19,7 @@ from autograder.cli import build_parser
 from autograder.config import IMAGE_EXTS, SUPPORTED_EXTS, TEXT_EXTS, RunConfig
 from autograder.models import AssignmentSpec, Problem, Rubric
 from autograder.report import write_manifest
+from autograder.run_state import RunBinding
 from autograder.solutions import parse_provided_solutions
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -463,6 +464,18 @@ def test_public_guides_cover_openrouter_migration_contract() -> None:
     assert "session" in text.lower() and "sticky" in text.lower()
     assert "schema 3" in text.lower()
     assert "fresh" in text.lower() and "--out" in text
+
+
+def test_reference_run_binding_schema_matches_runtime() -> None:
+    section = _reference_text().split("## Run binding and cache behavior", 1)[1]
+    section = section.split("\n## ", 1)[0]
+    documented_versions = re.findall(
+        r"(?:schema version\s*\n|binding schema, currently )`(\d+)`",
+        section,
+    )
+    runtime_version = str(RunBinding(assignment_sha256="test", config={}).schema_version)
+
+    assert documented_versions == [runtime_version, runtime_version]
 
 
 def test_getting_started_names_every_removed_interface_and_replacement() -> None:
