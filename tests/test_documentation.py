@@ -434,7 +434,7 @@ def test_cli_contract_catches_changed_submissions_arity() -> None:
         _assert_cli_option_contract(rows, parser)
 
 
-@pytest.mark.parametrize("destination", ["thinking", "effort"])
+@pytest.mark.parametrize("destination", ["reasoning_effort"])
 def test_cli_contract_catches_changed_choices(destination: str) -> None:
     parser = build_parser()
     inspect_parser = _subparser_action(parser).choices["inspect"]
@@ -447,6 +447,20 @@ def test_cli_contract_catches_changed_choices(destination: str) -> None:
 
     with pytest.raises(AssertionError, match="CLI action contract drift"):
         _assert_cli_option_contract(rows, parser)
+
+
+def test_public_guides_cover_openrouter_migration_contract() -> None:
+    text = "\n".join(path.read_text(encoding="utf-8") for path in MAINTAINED_MARKDOWN)
+
+    assert "OPENROUTER_API_KEY" in text
+    assert "openrouter/auto-beta" in text
+    assert "openai/gpt-5.1" in text
+    assert "--allow-data-retention" in text
+    assert "--allow-data-collection" in text
+    assert "automatic prompt caching" in text.lower()
+    assert "session" in text.lower() and "sticky" in text.lower()
+    assert "schema 3" in text.lower()
+    assert "fresh" in text.lower() and "--out" in text
 
 
 def test_runconfig_contract_rejects_a_duplicate_canonical_field_row() -> None:

@@ -28,7 +28,7 @@ vulnerability that this tool actually exercises.
 
 ## Handling your API key
 
-The Anthropic API key is read from the `ANTHROPIC_API_KEY` environment variable
+The OpenRouter API key is read from the `OPENROUTER_API_KEY` environment variable
 or the `--api-key` flag, and is held in memory for the duration of a run. It is
 never written to the output directory and never logged. `run_manifest.json`
 records the model and run settings, but not the key.
@@ -39,8 +39,11 @@ history.
 
 ## Handling student data
 
-Grading sends assignment pages and student submissions to the Anthropic API.
-Confirm that your institution permits this before grading real student work.
+Grading sends assignment pages and student submissions through OpenRouter to
+the selected model provider. By default, routing requires zero data retention
+and denies providers that collect or train on request data. Only use
+`--allow-data-retention` or `--allow-data-collection` after confirming that
+your institution permits the relaxed policy.
 
 The output directory records student names, transcribed handwriting, and the
 path of every input file. Protect it the same way you protect the original
