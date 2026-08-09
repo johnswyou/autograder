@@ -557,6 +557,63 @@ def test_installed_sdk_accepts_every_parameter_the_client_sends():
     assert set(sdk.sent) <= set(inspect.signature(Chat.send).parameters)
 
 
+def test_installed_sdk_validates_canonical_messages_tools_and_provider():
+    from openrouter import components, utils
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "go"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64,eA=="},
+                },
+            ],
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call",
+                    "type": "function",
+                    "function": {"name": "compute", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call",
+            "content": [{"type": "text", "text": "accepted"}],
+        },
+    ]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "compute",
+                "description": "calculate",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    provider = {
+        "allow_fallbacks": True,
+        "require_parameters": True,
+        "zdr": True,
+        "data_collection": "deny",
+    }
+
+    parsed_messages = utils.get_pydantic_model(messages, list[components.ChatMessages])
+    parsed_tools = utils.get_pydantic_model(tools, list[components.ChatFunctionTool])
+    parsed_provider = utils.get_pydantic_model(provider, components.ProviderPreferences)
+
+    assert [message.role for message in parsed_messages] == ["system", "user", "assistant", "tool"]
+    assert parsed_tools[0].function.name == "compute"
+    assert parsed_provider.model_dump(exclude_unset=True) == provider
+
+
 def test_make_client_sends_static_openrouter_attribution(monkeypatch):
     import openrouter
 
