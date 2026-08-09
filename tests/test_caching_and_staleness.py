@@ -1,5 +1,4 @@
-"""Offline tests for prompt-cache breakpoints, tool-image eviction,
-cache-aware usage metering, and immutable run-input binding."""
+"""Offline tests for OpenRouter usage metering, tool-image eviction, and run-input binding."""
 
 from __future__ import annotations
 

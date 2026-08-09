@@ -250,10 +250,12 @@ class _FakeSDK:
     def __init__(self, chunks):
         self.stream = _FakeStream(chunks)
         self.sent = None
+        self.send_calls = 0
         self.close_calls = 0
         self.chat = _ns(send=self.send)
 
     def send(self, **kwargs):
+        self.send_calls += 1
         self.sent = kwargs
         return self.stream
 
@@ -270,6 +272,87 @@ def _chunk(*, delta=None, finish=None, usage=None, model="resolved/model", metad
         openrouter_metadata=metadata,
         error=error,
     )
+
+
+@pytest.fixture
+def future_reasoning_delta():
+    from openrouter import components
+
+    delta = components.ChatStreamDelta.model_validate(
+        {
+            "reasoning_details": [
+                {
+                    "type": "reasoning.future",
+                    "id": "future-1",
+                    "opaque": {"version": 2},
+                }
+            ],
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "local-1",
+                    "type": "function",
+                    "function": {"name": "compute", "arguments": '{"expression":"1+1"}'},
+                }
+            ],
+        }
+    )
+    assert delta.reasoning_details is not None
+    assert isinstance(delta.reasoning_details[0], components.UnknownReasoningDetailUnion)
+    return delta
+
+
+class _RecordingToolKit:
+    def __init__(self):
+        self.dispatched: list[tuple[str, dict]] = []
+
+    def specs(self, names):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "compute",
+                    "description": "Evaluate arithmetic.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"expression": {"type": "string"}},
+                        "required": ["expression"],
+                    },
+                },
+            }
+        ]
+
+    def dispatch(self, name, arguments):
+        self.dispatched.append((name, arguments))
+        return [{"type": "text", "text": "executed"}], False
+
+
+def test_unknown_sdk_reasoning_detail_fails_before_tool_dispatch_or_replay(
+    future_reasoning_delta, cfg: RunConfig
+):
+    sdk = _FakeSDK([_chunk(delta=future_reasoning_delta, finish="tool_calls")])
+    toolkit = _RecordingToolKit()
+
+    with pytest.raises(AgentError) as raised:
+        run_agent(
+            OpenRouterChatClient(sdk),
+            cfg,
+            _task(
+                toolkit=toolkit,
+                tool_names=("compute",),
+                context="submission 7",
+                max_turns=2,
+            ),
+            None,
+        )
+
+    cause = "OpenRouter SDK cannot safely replay unsupported reasoning_details variant 'reasoning.future'"
+    assert str(raised.value) == f"[solver submission 7] OpenRouter call failed on turn 1: {cause}"
+    assert isinstance(raised.value.__cause__, AgentError)
+    assert str(raised.value.__cause__) == cause
+    assert sdk.send_calls == 1
+    assert toolkit.dispatched == []
+    assert sdk.stream.closed
 
 
 def test_openrouter_stream_assembly_preserves_reasoning_and_fragments():

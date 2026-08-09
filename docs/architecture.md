@@ -154,21 +154,24 @@ output-token budget, a turn limit, and a log context. `run_agent` adds a require
 `submit_result` tool whose input schema is `result_model.model_json_schema()`.
 
 The request uses `OpenRouter.chat.send(..., stream=True)` as a context manager.
-The adapter assembles text, refusal, reasoning details, and fragmented function
-calls by their wire index into a plain replayable assistant message. Non-submit
-calls are dispatched and each result is appended as its own `role: tool`
-message.
+The adapter assembles text, refusal, every SDK-known reasoning-detail variant,
+and fragmented function calls by their wire index into a plain replayable
+assistant message. If the SDK wraps a future reasoning-detail variant it cannot
+replay, the adapter fails the turn before any partial call is dispatched.
+Non-submit calls are dispatched and each result is appended as its own
+`role: tool` message.
 
 A result crosses the agent boundary only when the model calls `submit_result`
 and `model_validate` succeeds. All artifact models forbid extra fields, so an
 unexpected wrapper or misspelled field cannot be silently accepted. A
 validation error is sent back as an `ERROR:` tool message for repair. Finish-reason
-handling applies when a response contains no tool use: an ordinary normal stop
-receives at most two submit nudges, while `max_tokens`, refusal, and
-`length`, `content_filter`, refusal, stream-error, and unknown reasons fail
-immediately with targeted messages because a nudge cannot repair them. A response that contains tool calls follows
-the tool-dispatch or submission path even if its stop reason has one of those
-values. The task's turn limit bounds validation and tool repair loops.
+handling runs before local tool dispatch: `length`, `content_filter`, a nonempty
+refusal, an in-band stream error, and `error` or unknown terminal reasons fail
+immediately without executing partial tool calls. Only a clean `stop` with no
+tool calls receives at most two submit nudges. A response follows the
+tool-dispatch or submission path only when it has usable calls and its finish
+reason is exactly `tool_calls`. The task's turn limit bounds validation and tool
+repair loops.
 
 The OpenRouter SDK owns transport retries. After the SDK or an in-band stream
 error, `run_agent` raises `AgentError` with the stage, context, and turn. That

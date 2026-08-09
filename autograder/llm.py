@@ -259,10 +259,18 @@ class OpenRouterChatClient:
                             details = getattr(delta, "reasoning_details", None)
                             if details is not None and _is_present(details):
                                 details_seen = True
-                                reasoning_details.extend(
-                                    detail.model_dump(mode="json", exclude_none=True, exclude_unset=True)
-                                    for detail in details
-                                )
+                                for detail in details:
+                                    if getattr(detail, "is_unknown", False) is True and hasattr(detail, "raw"):
+                                        raw = detail.raw
+                                        variant = raw.get("type") if isinstance(raw, dict) else None
+                                        label = repr(variant[:80]) if isinstance(variant, str) else "without a type"
+                                        raise AgentError(
+                                            "OpenRouter SDK cannot safely replay unsupported "
+                                            f"reasoning_details variant {label}"
+                                        )
+                                    reasoning_details.append(
+                                        detail.model_dump(mode="json", exclude_none=True, exclude_unset=True)
+                                    )
                             for call in getattr(delta, "tool_calls", None) or []:
                                 fragment = fragments.setdefault(
                                     call.index,
