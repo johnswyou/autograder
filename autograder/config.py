@@ -10,19 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-DEFAULT_MODEL = "claude-sonnet-5"
-ThinkingMode = Literal["on", "off"]
-THINKING_MODES: tuple[ThinkingMode, ...] = ("on", "off")
-EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
-
-# Model families that reject `thinking="off"`, wholly or above a given effort.
-# The API stays authoritative; these tables exist only to turn a mid-run 400 —
-# which would arrive after earlier stages were paid for and the output directory
-# was already bound — into a startup error. A model absent from both tuples is
-# simply not pre-checked, so adding a new model never needs a code change here.
-_THINKING_ALWAYS_ON = ("claude-fable-", "claude-mythos-")
-_DISABLED_THINKING_CAPPED_AT_HIGH = ("claude-opus-5",)
-_EFFORTS_ABOVE_HIGH = ("xhigh", "max")
+DEFAULT_MODEL = "openrouter/auto-beta"
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+REASONING_EFFORTS: tuple[ReasoningEffort, ...] = (
+    "none", "minimal", "low", "medium", "high", "xhigh", "max",
+)
 
 SUPPORTED_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".md", ".markdown", ".tex"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
@@ -56,12 +48,11 @@ class RunConfig:
     # solutions generation
     solution_max_rounds: int = 2      # generator/evaluator regeneration rounds
 
-    # thinking: 'on' = adaptive thinking for every agent; 'off' = disabled.
-    thinking: ThinkingMode = "on"
-    effort: str | None = None      # low|medium|high|xhigh|max -> output_config.effort
+    reasoning_effort: ReasoningEffort | None = None
+    zero_data_retention: bool = True
+    allow_data_collection: bool = False
 
     # cost controls for the agent loop
-    prompt_caching: bool = True       # cache_control breakpoints (system + rolling last message)
     max_tool_images: int = 20         # tool-result images kept per agent before evicting the oldest
 
     # policies
@@ -73,13 +64,7 @@ class RunConfig:
     verbose: bool = False
 
     def __post_init__(self) -> None:
-        self.validate_thinking()
         self.validate_limits()
-        self.validate_model_settings()
-
-    def validate_thinking(self) -> None:
-        if self.thinking not in THINKING_MODES:
-            raise ValueError(f"thinking must be one of: {', '.join(THINKING_MODES)}")
 
     def validate_limits(self) -> None:
         """Range-check the fields the architecture guide invites callers to override.
@@ -105,24 +90,9 @@ class RunConfig:
         for name in ("review_confidence", "ocr_review_threshold"):
             if not 0.0 <= getattr(self, name) <= 1.0:
                 raise ValueError(f"{name} must be between 0 and 1")
-        if self.effort is not None and self.effort not in EFFORTS:
-            raise ValueError(f"effort must be one of: {', '.join(EFFORTS)}")
-
-    def validate_model_settings(self) -> None:
-        """Reject model/thinking/effort combinations the API is known to refuse."""
-        if self.thinking != "off":
-            return
-        if self.model.startswith(_THINKING_ALWAYS_ON):
+        if self.reasoning_effort is not None and self.reasoning_effort not in REASONING_EFFORTS:
             raise ValueError(
-                f"model {self.model!r} always reasons and rejects thinking='off'; "
-                "drop --thinking off, or choose a model that supports it"
-            )
-        if (self.model.startswith(_DISABLED_THINKING_CAPPED_AT_HIGH)
-                and self.effort in _EFFORTS_ABOVE_HIGH):
-            raise ValueError(
-                f"model {self.model!r} rejects thinking='off' above effort 'high'; "
-                f"use --effort high or lower, or drop --thinking off "
-                f"(requested effort: {self.effort!r})"
+                f"reasoning_effort must be one of: {', '.join(REASONING_EFFORTS)}"
             )
 
     def cache_identity(self) -> dict[str, object]:
@@ -152,8 +122,9 @@ class RunConfig:
             "max_source_pixels": self.max_source_pixels,
             "max_pixels": self.max_pixels,
             "solution_max_rounds": self.solution_max_rounds,
-            "thinking": self.thinking,
-            "effort": self.effort,
+            "reasoning_effort": self.reasoning_effort,
+            "zero_data_retention": self.zero_data_retention,
+            "allow_data_collection": self.allow_data_collection,
             "max_tool_images": self.max_tool_images,
             "strict_rubric": self.strict_rubric,
             "strict_solutions": self.strict_solutions,

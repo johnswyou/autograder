@@ -5,17 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agentic-autograder"
 version = "0.1.0"
-description = "Agentic autograder for physics/math assignments (PDF, images, markdown, LaTeX) using the Anthropic API"
+description = "Agentic autograder for physics/math assignments using OpenRouter"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    # 0.77.0 is the first release whose messages.stream() accepts
-    # output_config, which --effort requires; 0.76 and earlier raise TypeError.
-    # Verified by tests/test_llm_models.py, which checks the installed SDK
-    # against the parameters the agent loop actually sends.
-    "anthropic>=0.77",
+    # 1.0.3 is the first supported generated SDK surface. The offline boundary
+    # test checks every keyword sent by the adapter against Chat.send.
+    "openrouter>=1.0.3",
     # 1.24.3 renamed the import from `fitz` to `pymupdf`; 1.24.0-1.24.2 fail at
     # import time.
     "pymupdf>=1.24.3",

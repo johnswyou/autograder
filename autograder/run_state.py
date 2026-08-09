@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 _BINDING_FILENAME = "run_binding.json"
-_SCHEMA_VERSION: Literal[2] = 2
+_SCHEMA_VERSION: Literal[3] = 3
 
 
 class RunBindingError(RuntimeError):
@@ -39,7 +39,7 @@ class RunBinding(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     assignment_sha256: str
     config: dict[str, object]
     inputs: dict[str, str] = Field(default_factory=dict)

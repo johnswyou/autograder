@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
-from types import SimpleNamespace
 
 import pymupdf
 import pytest
 
 from autograder.config import RunConfig
+from autograder.llm import ChatRequest, ChatTurn, ToolCall, Usage
 from autograder.models import AssignmentSpec, Problem, ProblemType
 
 
@@ -52,60 +53,76 @@ def small_spec() -> AssignmentSpec:
     )
 
 
-class _StreamCtx:
-    """Mimics anthropic's MessageStreamManager context manager.
+class ScriptedChatClient:
+    """Offline ChatClient that records immutable request snapshots."""
 
-    The real loop uses ``with client.messages.stream(**params) as s:`` then
-    ``s.get_final_message()``; this reproduces that surface so tests exercise
-    the streaming path exactly as production does.
-    """
+    def __init__(self, script):
+        self._script = list(script)
+        self.calls: list[ChatRequest] = []
+        self.close_calls = 0
 
-    def __init__(self, message):
-        self._message = message
+    def complete(self, request: ChatRequest) -> ChatTurn:
+        self.calls.append(copy.deepcopy(request))
+        if not self._script:
+            raise AssertionError("scripted client ran out of responses")
+        response = self._script.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        if isinstance(response, list):
+            if len(response) == 1 and isinstance(response[0], ChatTurn):
+                return response[0]
+            return turn(*response)
+        return response
 
-    def __enter__(self):
-        return SimpleNamespace(get_final_message=lambda: self._message)
-
-    def __exit__(self, *exc):
-        return False
+    def close(self) -> None:
+        self.close_calls += 1
 
 
 def make_stub_client(script):
-    """A stand-in for anthropic.Anthropic.
-
-    ``script`` is a list of responses; each response is a list of content
-    blocks (SimpleNamespace with .type, plus .name/.id/.input for tool_use),
-    or an Exception instance to make that call raise (simulating an API
-    failure after SDK retries). Each messages.stream() call pops the next
-    response. Only ``stream`` is exposed (no ``create``) so any regression
-    back to the non-streaming call fails loudly here.
-    """
-    calls: list[dict] = []
-    queue = list(script)
-
-    def stream(**params):
-        calls.append(params)
-        if not queue:
-            raise AssertionError("stub client ran out of scripted responses")
-        content = queue.pop(0)
-        if isinstance(content, Exception):
-            raise content
-        message = SimpleNamespace(
-            content=content,
-            stop_reason="tool_use" if any(getattr(b, "type", "") == "tool_use" for b in content) else "end_turn",
-            usage=SimpleNamespace(input_tokens=10, output_tokens=5,
-                                  cache_creation_input_tokens=3, cache_read_input_tokens=7),
-        )
-        return _StreamCtx(message)
-
-    client = SimpleNamespace(messages=SimpleNamespace(stream=stream))
-    client.calls = calls
-    return client
+    return ScriptedChatClient(script)
 
 
-def tool_use(name: str, input: dict, id: str = "tu_1"):
-    return SimpleNamespace(type="tool_use", name=name, input=input, id=id)
+def turn(
+    *tool_calls: ToolCall,
+    content: str = "",
+    finish_reason: str | None = None,
+    refusal: str | None = None,
+    error: str | None = None,
+    usage: Usage | None = None,
+    model: str = "resolved/model",
+    provider: str = "Provider One",
+) -> ChatTurn:
+    calls = list(tool_calls)
+    message: dict = {"role": "assistant", "content": content or None}
+    if calls:
+        message["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": call.arguments},
+            }
+            for call in calls
+        ]
+    if refusal is not None:
+        message["refusal"] = refusal
+    return ChatTurn(
+        assistant_message=message,
+        tool_calls=calls,
+        finish_reason=finish_reason or ("tool_calls" if calls else "stop"),
+        refusal=refusal,
+        error=error,
+        usage=usage or Usage(prompt_tokens=10, completion_tokens=5),
+        resolved_model=model,
+        provider=provider,
+    )
 
 
-def text(t: str):
-    return SimpleNamespace(type="text", text=t)
+def tool_use(name: str, input: dict | str, id: str = "tu_1") -> ToolCall:
+    import json
+
+    arguments = input if isinstance(input, str) else json.dumps(input)
+    return ToolCall(id=id, name=name, arguments=arguments)
+
+
+def text(t: str) -> ChatTurn:
+    return turn(content=t)

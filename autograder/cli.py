@@ -5,7 +5,7 @@
     autograder rubric  --assignment hw3.pdf --out runs/hw3 [--rubric-prompt "..."]
     autograder grade   --assignment hw3.pdf --submissions scans/ --out runs/hw3
 
-Requires ANTHROPIC_API_KEY in the environment (or --api-key) whenever a
+Requires OPENROUTER_API_KEY in the environment (or --api-key) whenever a
 command needs to call the model; previously saved results can be reused
 without it.
 """
@@ -18,7 +18,7 @@ import os
 import sys
 from pathlib import Path
 
-from .config import DEFAULT_MODEL, EFFORTS, THINKING_MODES, RunConfig
+from .config import DEFAULT_MODEL, REASONING_EFFORTS, RunConfig
 from .orchestrator import PartialGradeFailure, Pipeline
 
 log = logging.getLogger("autograder")
@@ -54,10 +54,10 @@ def _parent_parser() -> argparse.ArgumentParser:
                      ))
     opt = p.add_argument_group("model & run options")
     opt.add_argument("--model", default=DEFAULT_MODEL,
-                     help=f"Anthropic model ID (default: {DEFAULT_MODEL})")
+                     help=f"OpenRouter model slug (default: {DEFAULT_MODEL})")
     opt.add_argument("--api-key", default=None,
                      help=(
-                         "Anthropic API key (default: read ANTHROPIC_API_KEY from "
+                         "OpenRouter API key (default: read OPENROUTER_API_KEY from "
                          "the environment)"
                      ))
     opt.add_argument("--max-workers", type=_positive_int, default=4,
@@ -67,18 +67,12 @@ def _parent_parser() -> argparse.ArgumentParser:
                          "Request a higher output-token limit for model calls. "
                          "Values below the built-in limits have no effect."
                      ))
-    opt.add_argument("--thinking", choices=THINKING_MODES, default="on",
-                     help=(
-                         "Use adaptive model reasoning (default: on); choose 'off' "
-                         "to disable it"
-                     ))
-    opt.add_argument("--effort", choices=EFFORTS, default=None,
-                     help="Model reasoning effort; omit to use the model default")
-    opt.add_argument("--no-prompt-caching", action="store_true",
-                     help=(
-                         "Disable reuse of repeated prompt content. This can increase "
-                         "input-token cost on multi-turn model calls."
-                     ))
+    opt.add_argument("--reasoning-effort", choices=REASONING_EFFORTS, default=None,
+                     help="Model reasoning effort; omit to use the selected model's default")
+    opt.add_argument("--allow-data-retention", action="store_true",
+                     help="Allow routing to providers that retain prompt data")
+    opt.add_argument("--allow-data-collection", action="store_true",
+                     help="Allow routing to providers that may collect or train on data")
     opt.add_argument("--force", action="store_true",
                      help=(
                          "Rebuild this command's results instead of reusing saved "
@@ -188,11 +182,11 @@ def build_parser() -> argparse.ArgumentParser:
 def _to_config(args: argparse.Namespace) -> RunConfig:
     cfg = RunConfig(
         model=args.model,
-        api_key=args.api_key or os.environ.get("ANTHROPIC_API_KEY"),
+        api_key=args.api_key or os.environ.get("OPENROUTER_API_KEY"),
         max_workers=args.max_workers,
-        thinking=args.thinking,
-        effort=args.effort,
-        prompt_caching=not args.no_prompt_caching,
+        reasoning_effort=args.reasoning_effort,
+        zero_data_retention=not args.allow_data_retention,
+        allow_data_collection=args.allow_data_collection,
         force=args.force,
         verbose=args.verbose,
     )
@@ -215,7 +209,7 @@ def _to_config(args: argparse.Namespace) -> RunConfig:
 def _check_key(cfg: RunConfig) -> None:
     if not cfg.api_key:
         log.warning(
-            "ANTHROPIC_API_KEY is not set. Saved results can still be reused, but "
+            "OPENROUTER_API_KEY is not set. Saved results can still be reused, but "
             "the command will stop if it needs to call the model. Set the environment "
             "variable or pass --api-key."
         )
@@ -228,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S",
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("anthropic").setLevel(logging.WARNING)
+    logging.getLogger("openrouter").setLevel(logging.WARNING)
 
     try:
         # Built inside the handler so an invalid option combination reports the

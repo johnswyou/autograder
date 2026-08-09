@@ -59,7 +59,7 @@ def test_solve_problem_regenerates_on_rejection(small_spec, tiny_pdf):
     doc.close()
     assert sol.verified and sol.rounds == 2 and sol.final_answer == "42"
     # the round-2 solver was told about the rejection
-    retry_text = "".join(b["text"] for b in client.calls[2]["messages"][0]["content"]
+    retry_text = "".join(b["text"] for b in client.calls[2].messages[1]["content"]
                          if isinstance(b, dict) and b.get("type") == "text")
     assert "REJECTED" in retry_text and "sign error in step 2" in retry_text
 
@@ -174,7 +174,7 @@ def test_generate_manual_taints_dependent_of_unverified_prerequisite(small_spec,
 
     dependent_solver_text = "".join(
         block["text"]
-        for block in client.calls[2]["messages"][0]["content"]
+        for block in client.calls[2].messages[1]["content"]
         if isinstance(block, dict) and block.get("type") == "text"
     )
     assert "UNVERIFIED PREREQUISITE" in dependent_solver_text
@@ -343,7 +343,7 @@ def test_generate_manual_degrades_per_problem(small_spec, tiny_pdf):
     failed = manual.solutions["2"]
     assert not failed.verified and failed.verifier_notes.startswith(AGENT_FAILURE)
     # 1b's solver saw its dependency's official result
-    dep_text = "".join(b["text"] for b in client.calls[3]["messages"][0]["content"]
+    dep_text = "".join(b["text"] for b in client.calls[3].messages[1]["content"]
                        if isinstance(b, dict) and b.get("type") == "text")
     assert "OFFICIAL RESULTS OF VERIFIED PREREQUISITE PARTS" in dep_text and "42" in dep_text
 
@@ -367,7 +367,7 @@ def test_gap_generation_receives_provided_dependencies(small_spec, tiny_pdf):
     doc.close()
     assert manual.solutions["1b"].verified
     assert any("INCOMPLETE" in i.message for i in issues)
-    solver_text = "".join(b["text"] for b in client.calls[0]["messages"][0]["content"]
+    solver_text = "".join(b["text"] for b in client.calls[0].messages[1]["content"]
                           if isinstance(b, dict) and b.get("type") == "text")
     assert "PREREQUISITE" in solver_text and "7.7 s" in solver_text
 
@@ -723,6 +723,40 @@ def test_stage_solutions_keeps_placeholders_without_key(tmp_path: Path, small_sp
     assert not manual.solutions["2"].verified                     # placeholder kept
     assert pipe._client is None                                   # no client constructed
     assert any("failed in a previous run" in i.message for i in pipe.issues)
+
+
+def test_pipeline_close_closes_created_client_once(tmp_path: Path, tiny_pdf):
+    from autograder.orchestrator import Pipeline
+
+    pipe = Pipeline(RunConfig(api_key="test-key"), tiny_pdf, tmp_path / "run")
+    client = make_stub_client([])
+    pipe._client = client
+    pipe.close()
+    pipe.close()
+    assert client.close_calls == 1
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_pipeline_entry_point_closes_created_client_on_every_exit(
+    tmp_path: Path, tiny_pdf, small_spec, monkeypatch, fails: bool,
+):
+    from autograder.orchestrator import Pipeline
+
+    pipe = Pipeline(RunConfig(api_key="test-key"), tiny_pdf, tmp_path / "run")
+    client = make_stub_client([])
+    pipe._client = client
+    if fails:
+        monkeypatch.setattr(
+            pipe,
+            "stage_spec",
+            lambda: (_ for _ in ()).throw(RuntimeError("stage failed")),
+        )
+        with pytest.raises(RuntimeError, match="stage failed"):
+            pipe.run_inspect()
+    else:
+        monkeypatch.setattr(pipe, "stage_spec", lambda: small_spec)
+        assert pipe.run_inspect() == small_spec
+    assert client.close_calls == 1
 
 
 # -- full pipeline smoke ---------------------------------------------------------

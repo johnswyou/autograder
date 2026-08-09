@@ -66,7 +66,7 @@ def test_open_creates_binding_in_empty_output(tmp_path: Path) -> None:
         "assignment_sha256": "assignment-sha256",
         "config": config,
         "inputs": {},
-        "schema_version": 2,
+        "schema_version": 3,
     }
 
 
@@ -141,7 +141,8 @@ def test_open_rejects_json_type_change_in_relevant_config(tmp_path: Path) -> Non
         RunState.open(output, "assignment-sha256", config)
 
 
-def test_open_rejects_unsupported_schema_version(tmp_path: Path) -> None:
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_open_rejects_unsupported_schema_version(tmp_path: Path, schema_version: int) -> None:
     output = tmp_path / "output"
     output.mkdir()
     (output / "run_binding.json").write_text(
@@ -149,7 +150,7 @@ def test_open_rejects_unsupported_schema_version(tmp_path: Path) -> None:
             {
                 "assignment_sha256": "assignment-sha256",
                 "config": RunConfig().cache_identity(),
-                "schema_version": 1,
+                "schema_version": schema_version,
             }
         )
     )
@@ -166,7 +167,7 @@ def test_open_rejects_unknown_binding_fields(tmp_path: Path) -> None:
             {
                 "assignment_sha256": "assignment-sha256",
                 "config": RunConfig().cache_identity(),
-                "schema_version": 2,
+                "schema_version": 3,
                 "unexpected": "field",
             }
         )
@@ -189,9 +190,9 @@ def test_binding_mismatch_names_the_settings_that_changed(tmp_path: Path) -> Non
         )
 
     message = str(excinfo.value)
-    assert "model: saved 'claude-sonnet-5', requested 'other-model'" in message
+    assert "model: saved 'openrouter/auto-beta', requested 'other-model'" in message
     assert "max_tokens: saved 32768, requested 4096" in message
-    assert "thinking" not in message, "unchanged settings must not be listed"
+    assert "reasoning_effort" not in message, "unchanged settings must not be listed"
 
 
 def test_cache_identity_ignores_operational_flags() -> None:
@@ -199,7 +200,6 @@ def test_cache_identity_ignores_operational_flags() -> None:
     operational_change = RunConfig(
         api_key="different-key",
         max_workers=1,
-        prompt_caching=False,
         verbose=True,
         # `force` chooses whether saved results are reused, never what they
         # contain, so it must not bind the output directory.
@@ -226,7 +226,7 @@ def test_directory_bound_by_an_earlier_release_is_rejected_not_reflagged(tmp_pat
     legacy["review_confidence"] = 0.6
     legacy["ocr_review_threshold"] = 0.5
     (output / "run_binding.json").write_text(
-        json.dumps({"schema_version": 2, "assignment_sha256": "abc",
+        json.dumps({"schema_version": 3, "assignment_sha256": "abc",
                     "config": legacy, "inputs": {}}),
         encoding="utf-8",
     )

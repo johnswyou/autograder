@@ -561,7 +561,7 @@ def test_mapper_is_not_given_blank_assignment_coordinates(small_spec, tiny_pdf, 
 
     map_student(client, cfg, spec, doc, doc)
 
-    sent = "".join(b["text"] for b in client.calls[0]["messages"][0]["content"]
+    sent = "".join(b["text"] for b in client.calls[0].messages[1]["content"]
                    if isinstance(b, dict) and b.get("type") == "text")
     assert "1a" in sent and "1b" in sent          # the inventory itself still reaches the mapper
     assert "answer_region" not in sent
@@ -662,10 +662,25 @@ def test_manifest_uses_atomic_writer_and_records_tool_version(
 
     write_manifest(
         path,
-        RunConfig(),
+        RunConfig(
+            api_key="secret-never-persisted",
+            reasoning_effort="high",
+            zero_data_retention=False,
+            allow_data_collection=True,
+        ),
         {},
         [],
-        {},
+        {
+            "api_calls": 2,
+            "prompt_tokens": 20,
+            "completion_tokens": 10,
+            "reasoning_tokens": 3,
+            "cached_prompt_tokens": 4,
+            "cache_write_tokens": 1,
+            "cost_usd": 0.02,
+            "resolved_models": ["vendor/resolved"],
+            "providers": ["Provider One"],
+        },
         datetime(2026, 7, 24, tzinfo=timezone.utc),
         [],
         "complete",
@@ -677,6 +692,16 @@ def test_manifest_uses_atomic_writer_and_records_tool_version(
     assert manifest["tool"] == "agentic-autograder"
     assert manifest["tool_version"] == __version__
     assert manifest["run_status"] == "complete"
+    assert manifest["requested_model"] == "openrouter/auto-beta"
+    assert manifest["resolved_models"] == ["vendor/resolved"]
+    assert manifest["providers"] == ["Provider One"]
+    assert manifest["config"]["reasoning_effort"] == "high"
+    assert manifest["config"]["zero_data_retention"] is False
+    assert manifest["config"]["allow_data_collection"] is True
+    assert manifest["usage"]["cost_usd"] == 0.02
+    serialized = writes[0][1]
+    assert "secret-never-persisted" not in serialized
+    assert "messages" not in serialized
 
 
 def test_report_writers(tmp_path: Path, small_spec):
@@ -1065,12 +1090,15 @@ def test_cli_parsing():
     p = build_parser()
     args = p.parse_args([
         "grade", "-a", "hw.pdf", "-o", "out", "-S", "subs/",
-        "--rubric-prompt", "weight method", "--thinking", "on",
-        "--effort", "high", "--strict-rubric", "--ocr-threshold", "0.7",
+        "--rubric-prompt", "weight method", "--reasoning-effort", "high",
+        "--allow-data-retention", "--allow-data-collection",
+        "--strict-rubric", "--ocr-threshold", "0.7",
     ])
     cfg = _to_config(args)
     assert args.command == "grade" and args.submissions == ["subs/"]
-    assert cfg.thinking == "on" and cfg.effort == "high"
+    assert cfg.reasoning_effort == "high"
+    assert cfg.zero_data_retention is False
+    assert cfg.allow_data_collection is True
     assert cfg.strict_rubric and cfg.ocr_review_threshold == 0.7
 
     with pytest.raises(SystemExit):
@@ -1078,6 +1106,16 @@ def test_cli_parsing():
 
     args = p.parse_args(["inspect", "-a", "hw.pdf", "-o", "out"])
     assert args.command == "inspect"
+
+
+def test_cli_reads_only_openrouter_api_key(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "legacy-key")
+    args = build_parser().parse_args(["inspect", "-a", "hw.pdf", "-o", "out"])
+    assert _to_config(args).api_key == "openrouter-key"
+
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    assert _to_config(args).api_key is None
 
 
 @pytest.mark.parametrize("command", ["inspect", "solve", "rubric", "grade"])
@@ -1097,7 +1135,10 @@ def test_cli_help_explains_output_reuse_and_force(
         "Request a higher output-token limit for model calls. Values below "
         "the built-in limits have no effect."
     ) in help_text
-    assert "Use adaptive model reasoning (default: on)" in help_text
+    assert "OpenRouter model slug" in help_text
+    assert "--reasoning-effort" in help_text
+    assert "--allow-data-retention" in help_text
+    assert "--allow-data-collection" in help_text
     assert "Rebuild this command's results instead of reusing saved results" in help_text
     assert "If inputs or settings changed, choose a new --out directory" in help_text
     assert "--force does not make the old directory reusable" in help_text
@@ -1346,19 +1387,22 @@ def test_cli_missing_key_warning_states_consequence_and_fix(
         _check_key(RunConfig(api_key=None))
 
     assert (
-        "ANTHROPIC_API_KEY is not set. Saved results can still be reused, but "
+        "OPENROUTER_API_KEY is not set. Saved results can still be reused, but "
         "the command will stop if it needs to call the model. Set the environment "
         "variable or pass --api-key."
     ) in caplog.text
     assert "cached stages" not in caplog.text
 
 
-@pytest.mark.parametrize("removed_mode", ["auto", "all"])
-def test_cli_rejects_removed_thinking_modes(removed_mode: str):
+@pytest.mark.parametrize("removed_option", ["--thinking", "--effort", "--no-prompt-caching"])
+def test_cli_rejects_anthropic_era_options(removed_option: str):
+    option = [removed_option]
+    if removed_option != "--no-prompt-caching":
+        option.append("high")
     with pytest.raises(SystemExit):
         build_parser().parse_args([
             "grade", "-a", "hw.pdf", "-o", "out", "-S", "subs/",
-            "--thinking", removed_mode,
+            *option,
         ])
 
 
