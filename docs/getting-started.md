@@ -232,6 +232,14 @@ Run bindings use schema 3. Output directories created by an earlier transport
 or schema are rejected; choose a fresh `--out` directory rather than mixing
 their saved artifacts with a current OpenRouter run.
 
+If you are migrating an existing installation, replace
+`ANTHROPIC_API_KEY` with `OPENROUTER_API_KEY` and replace `--effort` with
+`--reasoning-effort`. The old `--thinking` switch is removed: omit the new
+option to use the selected model's default, or use `--reasoning-effort none`
+to request no reasoning. `--no-prompt-caching` is also removed because prompt
+caching is automatic at OpenRouter or the selected provider. Use a fresh
+`--out` directory after making this migration.
+
 To understand what happens between the PDF and the report, read
 [How it works](how-it-works.md). Return to the
 [documentation index](README.md) for all reader paths.

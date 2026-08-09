@@ -381,12 +381,46 @@ rows retain `total_possible` and any available leaf awards but leave
 score field blank. Text cells that could be spreadsheet formulas are prefixed
 with an apostrophe; numeric score cells remain numeric.
 
-`run_manifest.json` records `tool`, `tool_version`, `run_status`, UTC start and
-finish times, Python version, model, selected `config`, hashed `inputs`, hashed
-`submissions`, `issues`, and `usage`. Its run status is `complete` or
-`partial_failure`. Usage counts only the current invocation: API calls, input
-tokens, cache-creation input tokens, cache-read input tokens, and output tokens.
-The API key is never included.
+`run_manifest.json` records the exact top-level keys below. `requested_model`
+is the configured OpenRouter slug; `resolved_models` and `providers` are the
+sorted routing identities observed during this invocation. Its run status is
+`complete` or `partial_failure`. `usage` counts only the current invocation and
+uses normalized prompt, completion, reasoning, cached-prompt, cache-write, and
+cost fields. The API key, messages, and tool payloads are never included.
+
+<!-- manifest-key-contract:start -->
+```json
+{
+  "top_level": [
+    "config",
+    "finished_utc",
+    "inputs",
+    "issues",
+    "providers",
+    "python",
+    "requested_model",
+    "resolved_models",
+    "run_status",
+    "started_utc",
+    "submissions",
+    "tool",
+    "tool_version",
+    "usage"
+  ],
+  "usage": [
+    "api_calls",
+    "cache_write_tokens",
+    "cached_prompt_tokens",
+    "completion_tokens",
+    "cost_usd",
+    "prompt_tokens",
+    "providers",
+    "reasoning_tokens",
+    "resolved_models"
+  ]
+}
+```
+<!-- manifest-key-contract:end -->
 
 ## Statuses and score availability
 

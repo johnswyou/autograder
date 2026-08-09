@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 from dataclasses import fields
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -17,6 +18,7 @@ from autograder import __version__
 from autograder.cli import build_parser
 from autograder.config import IMAGE_EXTS, SUPPORTED_EXTS, TEXT_EXTS, RunConfig
 from autograder.models import AssignmentSpec, Problem, Rubric
+from autograder.report import write_manifest
 from autograder.solutions import parse_provided_solutions
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -461,6 +463,55 @@ def test_public_guides_cover_openrouter_migration_contract() -> None:
     assert "session" in text.lower() and "sticky" in text.lower()
     assert "schema 3" in text.lower()
     assert "fresh" in text.lower() and "--out" in text
+
+
+def test_getting_started_names_every_removed_interface_and_replacement() -> None:
+    text = (ROOT / "docs" / "getting-started.md").read_text(encoding="utf-8")
+
+    for removed in (
+        "ANTHROPIC_API_KEY",
+        "--thinking",
+        "--effort",
+        "--no-prompt-caching",
+    ):
+        assert removed in text
+    for replacement in (
+        "OPENROUTER_API_KEY",
+        "--reasoning-effort",
+        "automatic prompt caching",
+    ):
+        assert replacement in text
+
+
+def test_reference_manifest_keys_match_the_written_artifact(tmp_path: Path) -> None:
+    usage = {
+        "api_calls": 1,
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "reasoning_tokens": 2,
+        "cached_prompt_tokens": 3,
+        "cache_write_tokens": 1,
+        "cost_usd": 0.004,
+        "resolved_models": ["vendor/model"],
+        "providers": ["Provider One"],
+    }
+    path = tmp_path / "run_manifest.json"
+    write_manifest(
+        path,
+        RunConfig(),
+        {},
+        [],
+        usage,
+        datetime(2026, 8, 9, tzinfo=timezone.utc),
+        [],
+        "complete",
+    )
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+
+    assert _marked_json(_reference_text(), "manifest-key-contract") == {
+        "top_level": sorted(manifest),
+        "usage": sorted(manifest["usage"]),
+    }
 
 
 def test_runconfig_contract_rejects_a_duplicate_canonical_field_row() -> None:
