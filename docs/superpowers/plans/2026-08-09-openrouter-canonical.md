@@ -142,7 +142,7 @@ whose tests assert two contradictory protocols.
   Instantiate `OpenRouter` with the configured key, repository URL as
   `http_referer`, and `Agentic Autograder` as `x_open_router_title`. Call
   `chat.send` with `stream=True`, `x_open_router_metadata="enabled"`,
-  `max_completion_tokens`, function tools, a per-agent session ID, provider
+  `max_tokens`, function tools, a per-agent session ID, provider
   values from the Global Constraints, and `reasoning_effort` only when set.
   Consume the returned stream as a context manager.
 

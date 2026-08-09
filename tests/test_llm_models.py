@@ -202,7 +202,7 @@ def test_two_nudges_then_error(cfg: RunConfig):
 @pytest.mark.parametrize(
     ("response", "match"),
     [
-        (turn(content="truncated", finish_reason="length"), "hit max_completion_tokens"),
+        (turn(content="truncated", finish_reason="length"), "hit max_tokens"),
         (turn(content="blocked", finish_reason="content_filter", refusal="policy"), "content filter"),
         (turn(content="blocked", finish_reason="stop", refusal="policy"), "model refused"),
         (turn(error="provider disconnected"), "stream failed.*provider disconnected"),
@@ -415,7 +415,7 @@ def test_openrouter_stream_assembly_preserves_reasoning_and_fragments():
         messages=[{"role": "user", "content": "go"}],
         tools=[],
         model="router",
-        max_completion_tokens=99,
+        max_tokens=99,
         reasoning_effort="high",
         provider={"zdr": True},
         session_id="session",
@@ -453,7 +453,7 @@ def test_openrouter_stream_assembly_preserves_reasoning_and_fragments():
         "messages": request.messages,
         "tools": request.tools,
         "model": "router",
-        "max_completion_tokens": 99,
+        "max_tokens": 99,
         "reasoning_effort": "high",
         "provider": {"zdr": True},
         "session_id": "session",
@@ -490,7 +490,7 @@ def test_openrouter_omits_null_text_fields_but_preserves_empty_reasoning_details
             messages=[],
             tools=[],
             model="m",
-            max_completion_tokens=1,
+            max_tokens=1,
             reasoning_effort=None,
             provider={},
             session_id="s",
@@ -539,7 +539,7 @@ def test_openrouter_in_band_error_discards_partial_call_and_closes_stream():
                 messages=[],
                 tools=[],
                 model="m",
-                max_completion_tokens=1,
+                max_tokens=1,
                 reasoning_effort=None,
                 provider={},
                 session_id="s",
@@ -568,7 +568,7 @@ def test_openrouter_decoder_failure_is_contextual_and_closes_stream():
                 messages=[],
                 tools=[],
                 model="m",
-                max_completion_tokens=1,
+                max_tokens=1,
                 reasoning_effort=None,
                 provider={},
                 session_id="s",
@@ -592,7 +592,7 @@ def test_openrouter_client_omits_optional_reasoning_and_closes_once():
             messages=[],
             tools=[],
             model="m",
-            max_completion_tokens=1,
+            max_tokens=1,
             reasoning_effort=None,
             provider={},
             session_id="s",
@@ -614,7 +614,7 @@ def test_openrouter_client_wraps_pre_stream_failure():
                 messages=[],
                 tools=[],
                 model="m",
-                max_completion_tokens=1,
+                max_tokens=1,
                 reasoning_effort=None,
                 provider={},
                 session_id="s",
@@ -634,7 +634,7 @@ def test_installed_sdk_accepts_every_parameter_the_client_sends():
         ]
     )
     request = ChatRequest(
-        messages=[], tools=[], model="m", max_completion_tokens=1, reasoning_effort="max", provider={}, session_id="s"
+        messages=[], tools=[], model="m", max_tokens=1, reasoning_effort="max", provider={}, session_id="s"
     )
     OpenRouterChatClient(sdk).complete(request)
     assert set(sdk.sent) <= set(inspect.signature(Chat.send).parameters)

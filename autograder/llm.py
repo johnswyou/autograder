@@ -55,7 +55,7 @@ class ChatRequest:
     messages: list[dict[str, Any]]
     tools: list[dict[str, Any]]
     model: str
-    max_completion_tokens: int
+    max_tokens: int
     reasoning_effort: ReasoningEffort | None
     provider: dict[str, Any]
     session_id: str
@@ -183,7 +183,7 @@ class OpenRouterChatClient:
                 "messages": request.messages,
                 "tools": request.tools,
                 "model": request.model,
-                "max_completion_tokens": request.max_completion_tokens,
+                "max_tokens": request.max_tokens,
                 "provider": request.provider,
                 "session_id": request.session_id,
                 "stream": True,
@@ -444,7 +444,7 @@ def run_agent(
             messages=messages,
             tools=tools,
             model=cfg.model,
-            max_completion_tokens=task.max_tokens,
+            max_tokens=task.max_tokens,
             reasoning_effort=cfg.reasoning_effort,
             provider=_provider_policy(cfg),
             session_id=session_id,
@@ -461,7 +461,7 @@ def run_agent(
         reason = response.finish_reason
         if reason == "length":
             raise AgentError(
-                f"{tag} hit max_completion_tokens={task.max_tokens} without submitting; raise --max-tokens"
+                f"{tag} hit max_tokens={task.max_tokens} without submitting; raise --max-tokens"
             )
         if reason == "content_filter":
             raise AgentError(f"{tag} stopped by the model's content filter on turn {turn_number}")
