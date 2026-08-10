@@ -348,12 +348,99 @@ thresholds are the exception: because they change routing rather than scores,
 you can rerun the same directory to ask which existing results a stricter or
 looser threshold would flag.
 
+## Choose a reasoning effort
+
+**Treat `--reasoning-effort` as a run-wide model preference, not as a fixed
+token budget or a portable quality level.** It is a shared option on every
+subcommand and is written after the subcommand, like the other run options:
+
+```bash
+autograder grade \
+    --assignment examples/sample/sample_assignment.pdf \
+    --submissions examples/sample/submissions \
+    --out runs/sample-demo-high-effort \
+    --model openai/gpt-5.1 \
+    --reasoning-effort high
+```
+
+The accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+and `max`. These labels tell a compatible model how much internal reasoning to
+allocate. They do not promise a particular number of reasoning tokens or the
+same behavior across models.
+
+Omission and `none` deliberately have different meanings:
+
+| Configuration | What the client sends | Consequence |
+|---|---|---|
+| Omit `--reasoning-effort` | No reasoning-effort field | The selected model or provider uses its default. This also avoids adding reasoning-effort support as a routing requirement. |
+| `--reasoning-effort none` | An explicit `none` preference | Ask a compatible model to disable reasoning. This is not the same as accepting its default. |
+| `--reasoning-effort LEVEL` | The selected label on every model request | Ask for that relative effort. OpenRouter may translate it to a provider-native control or the nearest level the model supports. |
+
+The parser checks only that the label is in the list above. It cannot guarantee
+that a selected model/provider combination will honor that exact level.
+OpenRouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection)
+is configured to require support for supplied parameters and to allow provider
+fallbacks. Supplying an effort can therefore narrow the eligible endpoints; a
+request fails if no endpoint also satisfies the model's image and tool
+requirements and the run's privacy policy. OpenRouter's
+[reasoning controls](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
+may normalize a level for an eligible provider, and some model-specific
+combinations may still be rejected. In particular, do not assume that `xhigh`
+or `max` is portable merely because the autograder accepts the spelling.
+
+The default `openrouter/auto-beta` model is dynamic: separate agent sessions can
+resolve to different models or providers, each with its own default and effort
+scale. A session remains sticky within one agent loop, but a complete grading
+run contains many independent loops. For more reproducible or high-stakes
+grading, choose a fixed model slug, confirm that model's supported reasoning
+controls, and set an explicit effort only after testing it on representative
+work.
+
+The setting applies to every uncached model call made by the requested command,
+including every follow-up turn after a tool call. Because `grade` includes all
+earlier stages when their artifacts are unavailable, one flag can affect
+assignment analysis, solution generation and evaluation, teacher-material
+interpretation, rubric work, submission mapping, transcription, and grading.
+It does not affect deterministic Python validation, score aggregation, or
+report generation. There is no per-stage reasoning-effort option.
+
+This run-wide scope can multiply cost and latency: generated solutions use a
+separate evaluator and may be regenerated, while many transcription and grading
+tasks can run for one assignment. Higher effort can help with difficult visual
+or rubric judgments but may produce more output tokens and take longer; lower
+or disabled reasoning can be cheaper but may reduce quality. OpenRouter counts
+reasoning tokens as output tokens and bills them at the applicable output rate.
+Benchmark a representative subset rather than assuming the highest value is
+best.
+
+`--reasoning-effort` is independent of `--max-tokens`. The latter controls the
+agent output ceilings; selecting a higher effort neither raises those ceilings
+nor reserves a reasoning-token budget. A reasoning-heavy request can still hit
+the output limit. Likewise, “Max” in a model name is part of that model's name
+and has no connection to `--reasoning-effort max`.
+
+Reasoning effort is part of the output directory's run-binding identity. Use
+the identical value when continuing from `inspect` to `solve`, `rubric`, or
+`grade` in the same `--out`. Changing it requires a fresh output directory, and
+`--force` cannot override that mismatch. Omission and an explicit value such as
+`medium` remain distinct identities even if the selected model currently
+defaults to that value. Reusing an identical cached stage makes no model call,
+so the setting has no new or retroactive effect on that artifact.
+
+For audit purposes, `run_manifest.json` records the requested effort, reported
+reasoning-token usage and cost, and the resolved models and providers for the
+current command invocation. It does not record a provider-normalized effective
+effort, expose the model's reasoning text, or combine usage from earlier
+resumptions. A `reasoning` field in `solutions_manual.json` is instead the
+model's submitted worked explanation for an official solution; it is not the
+provider reasoning stream.
+
 ## Manage cost, latency, and concurrency
 
-**Choose model quality and reasoning settings before binding the output
-directory, then control concurrency to fit your API limits.** Model, reasoning
-effort, privacy routing, and output-token changes require a fresh directory; worker count does
-not.
+**Choose model quality and the reasoning setting described above before binding
+the output directory, then control concurrency to fit your API limits.** Model,
+reasoning effort, privacy routing, and output-token changes require a fresh
+directory; worker count does not.
 
 Cost is concentrated as follows:
 
@@ -367,11 +454,8 @@ Cost is concentrated as follows:
   transcription, and grading stages use up to the configured worker count.
 
 More workers can reduce wall time but increase simultaneous requests and rate
-pressure; it does not reduce total logical work. Higher reasoning effort can
-improve difficult judgments while increasing latency or token use; lower or
-disabled reasoning can be cheaper but may reduce quality. The
-selected model must support image input, tool use, and the requested reasoning
-controls.
+pressure; it does not reduce total logical work. The selected model must support
+image input, tool use, and any requested reasoning controls.
 
 Automatic prompt caching is handled by OpenRouter and the selected provider
 and can reduce repeated input-token cost within multi-turn agents. Each agent
