@@ -103,6 +103,8 @@ def _contract_action_kind(action: argparse.Action) -> str:
         return "store_true"
     if isinstance(action, argparse._StoreAction):
         return "store"
+    if isinstance(action, argparse._AppendAction):
+        return "append"
     return type(action).__name__
 
 

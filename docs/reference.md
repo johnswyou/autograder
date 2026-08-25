@@ -55,6 +55,7 @@ the live parser; automatic `argparse` help actions are explicitly excluded.
 | `all` | `--max-tokens` | `max_tokens` | `1` | `store` | `any` | Positive integer | `null` | Raises both configured token limits. A value below either built-in limit has no effect. |
 | `all` | `--reasoning-effort` | `reasoning_effort` | `1` | `store` | `none, minimal, low, medium, high, xhigh, max` | One listed effort | `null` | Optional run-wide reasoning preference. Omission uses the selected model's default; see [Choose a reasoning effort](usage.md#choose-a-reasoning-effort). |
 | `all` | `--provider-sort` | `provider_sort` | `1` | `store` | `price, throughput, latency, exacto` | One listed strategy | `null` | Ranks the endpoints already eligible for a request instead of letting OpenRouter balance across them. Omission keeps that balancing; see [Choose a provider sort](usage.md#choose-a-provider-sort). |
+| `all` | `--provider` | `provider_only` | `1` | `append` | `any` | Provider slug; repeat or comma-separate | `null` | Restricts routing to the listed OpenRouter provider slugs. Omission allows every eligible provider; see [Pin a provider](usage.md#pin-a-provider). |
 | `all` | `--allow-data-retention` | `allow_data_retention` | `0` | `store_true` | `any` | Flag with no value | `false` | Opts out of the default zero-data-retention routing requirement. |
 | `all` | `--allow-data-collection` | `allow_data_collection` | `0` | `store_true` | `any` | Flag with no value | `false` | Opts out of the default denial of providers that collect or train on request data. |
 | `all` | `--force` | `force` | `0` | `store_true` | `any` | Flag with no value | `false` | Rebuilds requested stages instead of loading saved artifacts. It cannot override a binding mismatch. |
@@ -570,6 +571,7 @@ mechanically.
 | `zero_data_retention` | `true` | Boolean; `--allow-data-retention` sets false | yes |
 | `allow_data_collection` | `false` | Boolean; `--allow-data-collection` sets true | yes |
 | `provider_sort` | `null` | null, `price`, `throughput`, `latency`, or `exacto`; `--provider-sort` | no |
+| `provider_only` | `()` | Tuple of provider slugs; `--provider` | yes |
 | `strict_rubric` | `false` | Boolean; `--strict-rubric` | yes |
 | `strict_solutions` | `false` | Boolean; `--strict-solutions` | yes |
 | `verify_provided_solutions` | `false` | Boolean; `--verify-provided-solutions` | yes |

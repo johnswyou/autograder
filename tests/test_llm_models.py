@@ -822,3 +822,184 @@ def test_spec_traversal_and_dependency_levels(small_spec: AssignmentSpec):
 def test_dependency_cycle_still_schedules_everything(small_spec: AssignmentSpec):
     small_spec.find("1a").depends_on = ["1b"]
     assert sorted(pid for level in dependency_levels(small_spec) for pid in level) == ["1a", "1b", "2"]
+
+
+class _ProviderRefusal(Exception):
+    """Shaped like ``openrouter.errors.OpenRouterError``.
+
+    ``__str__`` yields only OpenRouter's short wrapper message, while the
+    response body carries the provider's own explanation.
+    """
+
+    def __init__(self, message: str, body: str):
+        super().__init__(message)
+        self.message = message
+        self.body = body
+
+    def __str__(self) -> str:
+        return self.message
+
+
+_REFUSAL_BODY = (
+    '{"error":{"code":400,"message":"Provider returned error","metadata":'
+    '{"provider_name":"Google AI Studio","raw":"Invalid JSON payload received. '
+    'Unknown name \\"$defs\\" at tools[0].function_declarations[0].parameters"}}}'
+)
+
+
+def _refusing_client(where: str) -> OpenRouterChatClient:
+    sdk = _FakeSDK([])
+    error = _ProviderRefusal("Provider returned error", _REFUSAL_BODY)
+
+    def raise_it(**kwargs):
+        raise error
+
+    def raise_on_iter(**kwargs):
+        raise error
+
+    if where == "send":
+        sdk.chat.send = raise_it
+    else:
+        sdk.chat.send = lambda **kwargs: _RaisingStream(error)
+    return OpenRouterChatClient(sdk)
+
+
+class _RaisingStream:
+    def __init__(self, error: Exception):
+        self._error = error
+
+    def __enter__(self):
+        raise self._error
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def _bare_request() -> ChatRequest:
+    return ChatRequest(
+        messages=[], tools=[], model="m", max_tokens=1,
+        reasoning_effort=None, provider={}, session_id="s",
+    )
+
+
+def test_a_pre_stream_provider_refusal_reports_what_the_provider_said():
+    """OpenRouter answers 'Provider returned error' for anything upstream
+    refused. Without the body, an operator cannot tell an unusable tool schema
+    from a transient fault, and has to open the OpenRouter dashboard to find
+    out which one cost them the run."""
+    with pytest.raises(AgentError) as caught:
+        _refusing_client("send").complete(_bare_request())
+
+    assert "Provider returned error" in str(caught.value)
+    assert "Google AI Studio" in str(caught.value)
+    assert "$defs" in str(caught.value)
+
+
+def test_a_mid_stream_provider_refusal_reports_what_the_provider_said():
+    with pytest.raises(AgentError) as caught:
+        _refusing_client("stream").complete(_bare_request())
+
+    assert "Google AI Studio" in str(caught.value)
+
+
+def test_an_error_carrying_no_body_is_reported_unchanged():
+    sdk = _FakeSDK([])
+    sdk.chat.send = lambda **kwargs: (_ for _ in ()).throw(RuntimeError("offline"))
+    with pytest.raises(AgentError, match=r"before streaming: offline$"):
+        OpenRouterChatClient(sdk).complete(_bare_request())
+
+
+# -- routing provenance -----------------------------------------------------
+
+
+def test_the_selected_endpoint_names_the_provider_that_served_the_turn():
+    """The live metadata reports routing under ``endpoints.available``, marking
+    the chosen one ``selected``; ``attempts`` is present only when the router
+    had to retry. Reading ``attempts`` alone left ``provider`` unset on every
+    ordinary call, so ``run_manifest.json`` recorded no provider at all — the
+    one fact that distinguishes a run served entirely by one endpoint from a
+    run whose turns were split across two.
+    """
+    sdk = _FakeSDK([
+        _chunk(delta=_ns(content="ok", reasoning=None, refusal=None,
+                         reasoning_details=None, tool_calls=None), finish="stop"),
+        _chunk(metadata=_ns(
+            attempts=None,
+            endpoints=_ns(total=2, available=[
+                _ns(model="google/gemini-3.7-flash-20260813", provider="Google AI Studio",
+                    selected=False),
+                _ns(model="google/gemini-3.7-flash-20260813", provider="Google", selected=True),
+            ]),
+        )),
+    ])
+
+    response = OpenRouterChatClient(sdk).complete(_bare_request())
+
+    assert response.provider == "Google"
+    assert response.resolved_model == "google/gemini-3.7-flash-20260813"
+
+
+def test_a_retry_chain_still_names_the_endpoint_that_answered():
+    """When the router did retry, the successful attempt is authoritative."""
+    sdk = _FakeSDK([
+        _chunk(delta=_ns(content="ok", reasoning=None, refusal=None,
+                         reasoning_details=None, tool_calls=None), finish="stop"),
+        _chunk(metadata=_ns(
+            attempts=[
+                _ns(model="failed/model", provider="Bad", status=500),
+                _ns(model="resolved/model", provider="Good", status=200),
+            ],
+            endpoints=_ns(total=1, available=[
+                _ns(model="resolved/model", provider="Good", selected=True),
+            ]),
+        )),
+    ])
+
+    response = OpenRouterChatClient(sdk).complete(_bare_request())
+
+    assert response.provider == "Good"
+
+
+# -- pinning the endpoints a run may reach ----------------------------------
+
+
+def test_no_allowlist_leaves_the_routing_policy_untouched():
+    from autograder.config import RunConfig
+    from autograder.llm import _provider_policy
+
+    assert "only" not in _provider_policy(RunConfig(model="m"))
+
+
+def test_an_allowlist_reaches_the_provider_policy_as_only():
+    """`only` is OpenRouter's allowlist of provider slugs. Fallbacks stay on:
+    the point is to keep the router inside the allowed set, not to forbid it
+    from trying a second endpoint within that set."""
+    from autograder.config import RunConfig
+    from autograder.llm import _provider_policy
+
+    policy = _provider_policy(RunConfig(model="m", provider_only=("google-ai-studio",)))
+
+    assert policy["only"] == ["google-ai-studio"]
+    assert policy["allow_fallbacks"] is True
+
+
+def test_the_allowlist_binds_the_output_directory():
+    """Unlike a sort order, an allowlist decides which companies were permitted
+    to process the submissions. That is the same kind of statement as the two
+    privacy flags beside it, so artifacts made under one allowlist must not be
+    silently reused under another."""
+    from autograder.config import RunConfig
+
+    wide = RunConfig(model="m").cache_identity()
+    narrow = RunConfig(model="m", provider_only=("google-ai-studio",)).cache_identity()
+
+    assert wide["provider_only"] == []
+    assert narrow["provider_only"] == ["google-ai-studio"]
+    assert wide != narrow
+
+
+def test_a_blank_provider_slug_is_rejected():
+    from autograder.config import RunConfig
+
+    with pytest.raises(ValueError, match="provider_only"):
+        RunConfig(model="m", provider_only=("google-ai-studio", "  ")).validate_limits()

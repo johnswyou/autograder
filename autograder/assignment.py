@@ -55,6 +55,9 @@ and math that the text layer garbles. Use zoom whenever print is small (subscrip
 figure axis labels) — never guess at a number or symbol you cannot read clearly.
 - Record printed point values exactly as numbers; use null when no points are printed. Never \
 invent points.
+- Record `pages` on EVERY node: the 1-based page number(s) of the document where that problem \
+or part appears. A container spans the pages of all its children. This is not optional — later \
+stages locate each problem by it.
 - Record `depends_on` when a part uses an earlier result ('using your answer from part (a)', \
 'the circuit from Problem 2'). Use the ids of the referenced problems.
 - Record `figure_refs` (page + percent bbox) for figures/diagrams/data tables a problem refers \
@@ -118,9 +121,20 @@ def _completeness_issues(spec: AssignmentSpec, n_pages: int, *,
     """
     issues: list[str] = []
 
-    covered = {page for node in spec.walk() for page in node.pages if 1 <= page <= n_pages}
+    nodes = list(spec.walk())
+    covered = {page for node in nodes for page in node.pages if 1 <= page <= n_pages}
     uncovered = [page for page in range(1, n_pages + 1) if page not in covered]
-    if (check_pages and len(uncovered) >= MIN_UNCOVERED_PAGES
+    # A spec that records no page anywhere has not necessarily stopped reading:
+    # `pages` is optional on Problem, so a model can enumerate the whole paper
+    # and still leave the field empty. Naming the field is what lets the retry
+    # converge; telling such a model to re-inspect asks for work it already did.
+    if check_pages and nodes and not any(node.pages for node in nodes):
+        issues.append(
+            "no problem records a `pages` value, so no page of the document is accounted "
+            "for; set `pages` on every problem and part to the 1-based page number(s) it "
+            "appears on"
+        )
+    elif (check_pages and len(uncovered) >= MIN_UNCOVERED_PAGES
             and len(uncovered) > n_pages * MAX_UNCOVERED_PAGE_FRACTION):
         shown = ", ".join(str(page) for page in uncovered[:10])
         if len(uncovered) > 10:
@@ -198,10 +212,15 @@ def _incompleteness_complaint(spec: AssignmentSpec, n_pages: int, *,
     issues = _completeness_issues(spec, n_pages, check_pages=check_pages)
     if not issues:
         return None
-    return (
-        "that spec looks incomplete: " + "; ".join(issues) + ". Re-inspect the pages you have "
-        f"not accounted for and call {SUBMIT_TOOL_NAME} again with EVERY problem in the document."
+    # Only a spec that actually looks under-read is told to go back and read.
+    unpaged = any("`pages`" in issue for issue in issues)
+    remedy = (
+        f"Fill in the missing fields and call {SUBMIT_TOOL_NAME} again with the same problems."
+        if unpaged else
+        "Re-inspect the pages you have not accounted for and call "
+        f"{SUBMIT_TOOL_NAME} again with EVERY problem in the document."
     )
+    return "that spec looks incomplete: " + "; ".join(issues) + ". " + remedy
 
 
 def spec_digest(spec: AssignmentSpec, with_prompts: bool = False, snippet: int = 180,

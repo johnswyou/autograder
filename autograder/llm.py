@@ -12,7 +12,7 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from .config import ReasoningEffort, RunConfig
+from .config import ReasoningEffort, RunConfig, short
 from .tools import Block, ToolKit, text_block
 
 log = logging.getLogger("autograder")
@@ -161,6 +161,26 @@ def _is_present(value: Any) -> bool:
     return value is not UNSET
 
 
+_ERROR_BODY_LIMIT = 700
+
+
+def _describe_transport_error(exc: Exception) -> str:
+    """Render an SDK error in the provider's own words, not just the wrapper's.
+
+    ``OpenRouterError.__str__`` returns only OpenRouter's short ``error.message``,
+    which is the constant "Provider returned error" for anything an upstream
+    provider refused. The response body it also carries holds that provider's
+    account of what it refused and why. Reporting only the wrapper leaves an
+    operator unable to tell an unusable tool schema from a transient fault
+    without opening the OpenRouter dashboard.
+    """
+    described = str(exc)
+    body = getattr(exc, "body", None)
+    if not isinstance(body, str) or not body.strip() or body.strip() in described:
+        return described
+    return f"{described} — provider response: {short(body.strip(), _ERROR_BODY_LIMIT)}"
+
+
 def _number(value: Any, default: int | float = 0) -> int | float:
     if not _is_present(value) or value is None:
         return default
@@ -205,7 +225,10 @@ class OpenRouterChatClient:
             try:
                 stream_manager = self._sdk.chat.send(**params)
             except Exception as exc:
-                raise AgentError(f"OpenRouter request failed before streaming: {exc}") from exc
+                raise AgentError(
+                    "OpenRouter request failed before streaming: "
+                    f"{_describe_transport_error(exc)}"
+                ) from exc
 
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
@@ -236,6 +259,23 @@ class OpenRouterChatClient:
                             usage_obj = chunk_usage
                         metadata = getattr(chunk, "openrouter_metadata", None)
                         if metadata is not None and _is_present(metadata):
+                            # `endpoints.available` is always reported and marks the
+                            # chosen endpoint; `attempts` appears only when the router
+                            # had to retry, so it is read second and wins when present.
+                            endpoints = getattr(metadata, "endpoints", None)
+                            for endpoint in (
+                                getattr(endpoints, "available", None) or []
+                                if endpoints is not None and _is_present(endpoints)
+                                else []
+                            ):
+                                if getattr(endpoint, "selected", False) is not True:
+                                    continue
+                                chosen_model = getattr(endpoint, "model", None)
+                                chosen_provider = getattr(endpoint, "provider", None)
+                                if isinstance(chosen_model, str) and chosen_model:
+                                    resolved_model = chosen_model
+                                if isinstance(chosen_provider, str) and chosen_provider:
+                                    provider = chosen_provider
                             for attempt in getattr(metadata, "attempts", None) or []:
                                 if getattr(attempt, "status", None) == 200:
                                     attempt_model = getattr(attempt, "model", None)
@@ -303,7 +343,9 @@ class OpenRouterChatClient:
             except AgentError:
                 raise
             except Exception as exc:
-                raise AgentError(f"OpenRouter stream failed: {exc}") from exc
+                raise AgentError(
+                    f"OpenRouter stream failed: {_describe_transport_error(exc)}"
+                ) from exc
 
             calls: list[ToolCall] = []
             replay_calls: list[dict[str, Any]] = []
@@ -419,6 +461,11 @@ def _provider_policy(cfg: RunConfig) -> dict[str, Any]:
     # ranking, so the key stays out of the request unless one was asked for.
     if cfg.provider_sort is not None:
         policy["sort"] = cfg.provider_sort
+    # `only` is an allowlist of provider slugs. Fallbacks stay enabled: the
+    # point is to keep every turn of an agent loop inside a set of endpoints
+    # known to serve it, not to forbid a second try within that set.
+    if cfg.provider_only:
+        policy["only"] = list(cfg.provider_only)
     return policy
 
 

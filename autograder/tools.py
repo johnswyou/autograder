@@ -74,11 +74,17 @@ class ToolKit:
             "enum": doc_keys,
             "description": f"Which document to operate on: {', '.join(doc_keys)}.",
         }
+        # The allowed values are stated rather than enumerated. Google's schema
+        # dialect accepts `enum` only as a list of strings on a string type; an
+        # integer enum makes it discard the whole `properties` map, after which
+        # every name in `required` refers to nothing and Gemini rejects the tool
+        # with "required[0]: property is not defined" — naming a property that
+        # was never at fault. `dispatch` enforces the four values regardless.
         rotate_prop = {
             "type": "integer",
-            "enum": [0, 90, 180, 270],
             "description": (
-                "Clockwise rotation to apply before viewing (for sideways photos). Default 0. "
+                "Clockwise rotation to apply before viewing (for sideways photos). "
+                "Must be one of 0, 90, 180, or 270. Default 0. "
                 "For zoom, give bbox in the coordinates of the rotated view you are reading from "
                 "(same rotate value), not the original page."
             ),
