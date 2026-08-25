@@ -5,23 +5,33 @@ on:
     branches: [main]
   pull_request:
 
+# uv itself is pinned for the same reason ruff and mypy are: a uv release must
+# not change how an unrelated pull request resolves. Jobs that install from
+# uv.lock pass `--locked`, which fails rather than silently re-resolving when
+# the lockfile has drifted from pyproject.toml.
+env:
+  UV_VERSION: "0.11.28"
+
 jobs:
   lint:
-    # Both tools are pinned so a new release cannot turn an unrelated PR red.
-    # Their rule sets live in pyproject.toml; raise the pins deliberately.
+    # Both tools are pinned in the `dev` dependency group in pyproject.toml, so
+    # a new release cannot turn an unrelated PR red. Their rule sets live in the
+    # same file; raise the pins deliberately.
     name: lint and type check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v9
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: "3.10"
+          enable-cache: true
       - name: Install
-        run: pip install -e . "ruff==0.16.0" "mypy==2.3.0"
+        run: uv sync --locked
       - name: Ruff
-        run: ruff check autograder/ scripts/ tests/
+        run: uv run ruff check autograder/ scripts/ tests/
       - name: Mypy
-        run: mypy autograder/ scripts/
+        run: uv run mypy autograder/ scripts/
 
   test:
     runs-on: ubuntu-latest
@@ -31,20 +41,23 @@ jobs:
         python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v9
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
+          enable-cache: true
       - name: Install
-        run: pip install -e . pytest
+        run: uv sync --locked
       - name: Run offline test suite
-        run: python -m pytest tests/ -q
+        run: uv run pytest tests/ -q
 
   minimum-dependencies:
-    # The `test` job resolves every dependency to its newest release, so the
-    # floors declared in pyproject.toml are never otherwise exercised. This job
-    # installs the lowest version each floor permits, which is what a user with
-    # a constrained resolver gets. A failure means a floor is too low to run the
-    # code: raise it in pyproject.toml rather than relaxing this job.
+    # The `test` job installs the locked versions, so the floors declared in
+    # pyproject.toml are never otherwise exercised. This job deliberately
+    # ignores uv.lock and installs the lowest version each floor permits, which
+    # is what a user with a constrained resolver gets. A failure means a floor
+    # is too low to run the code: raise it in pyproject.toml rather than
+    # relaxing this job.
     name: minimum declared dependencies
     runs-on: ubuntu-latest
     steps:
@@ -52,8 +65,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: Install uv
-        run: pip install uv
+      - uses: astral-sh/setup-uv@v9
+        with:
+          version: ${{ env.UV_VERSION }}
       - name: Install the lowest permitted version of each dependency
         run: |
           uv pip install --system --resolution lowest-direct -e .

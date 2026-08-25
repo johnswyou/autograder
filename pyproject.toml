@@ -30,6 +30,18 @@ Issues = "https://github.com/johnswyou/autograder/issues"
 [project.scripts]
 autograder = "autograder.cli:main"
 
+[dependency-groups]
+# `uv sync` installs this group alongside the runtime dependencies, and uv.lock
+# pins the exact version every contributor and CI job resolves. Ruff and mypy
+# keep `==` pins because a new release of either can turn an unrelated pull
+# request red; raise them deliberately. pytest is unpinned: a new release
+# changes test collection, not the rules the code is judged against.
+dev = [
+    "pytest",
+    "ruff==0.16.0",
+    "mypy==2.3.0",
+]
+
 [tool.setuptools.packages.find]
 include = ["autograder*"]
 

@@ -647,20 +647,38 @@ method.
 ## Testing the architecture
 
 The suite is offline: synthetic PDFs/images and scripted chat clients run
-through the production schemas and loops without a network call. From the
-repository root, install the test and CI-pinned quality tools and run the same
-boundaries as continuous integration:
+through the production schemas and loops without a network call. Contributors
+work through [uv](https://docs.astral.sh/uv/). From the repository root, create
+the environment and run the same boundaries as continuous integration:
 
 ```bash
-python -m pip install -e . pytest "ruff==0.16.0" "mypy==2.3.0"
-python -m pytest tests/ -q
-python -m ruff check autograder/ scripts/ tests/
-python -m mypy autograder/ scripts/
+uv sync
+uv run pytest tests/ -q
+uv run ruff check autograder/ scripts/ tests/
+uv run mypy autograder/ scripts/
 ```
 
+`uv sync` builds `.venv/` from [`uv.lock`](../uv.lock), which is committed and
+holds the exact resolved version of every runtime dependency and of the `dev`
+group that supplies pytest, ruff, and mypy. Every contributor and CI job
+therefore installs the same versions. `uv run` executes inside that environment
+without activating it; activate `.venv/` first if you prefer bare `pytest`.
+
+Never edit `uv.lock` by hand. After changing anything under `[project]` or
+`[dependency-groups]` in [`pyproject.toml`](../pyproject.toml), run `uv lock`
+and commit the result; `uv lock --upgrade-package <name>` moves one package
+without disturbing the rest. CI installs with `uv sync --locked`, which fails
+rather than re-resolving when the lockfile has drifted from `pyproject.toml`,
+so a dependency change that skips `uv lock` turns the build red.
+
+The lockfile is a contributor tool, not the supported install path: instructors
+follow [Getting started](getting-started.md), and the `minimum declared
+dependencies` CI job deliberately ignores `uv.lock` so the floors declared in
+`pyproject.toml` stay exercised.
+
 Ruff checks source, scripts, and tests; mypy checks source and scripts. Their
-rule sets live in [`pyproject.toml`](../pyproject.toml), and their versions are
-pinned in CI so a tool release cannot change an unrelated pull request. Use the
+rule sets live in `pyproject.toml`, and their versions are pinned in the `dev`
+group so a tool release cannot change an unrelated pull request. Use the
 focused tests by boundary:
 
 - `tests/test_ingest_tools.py` for page rendering, crops, rotation, pixel guards,
