@@ -907,3 +907,54 @@ def test_an_error_carrying_no_body_is_reported_unchanged():
     sdk.chat.send = lambda **kwargs: (_ for _ in ()).throw(RuntimeError("offline"))
     with pytest.raises(AgentError, match=r"before streaming: offline$"):
         OpenRouterChatClient(sdk).complete(_bare_request())
+
+
+# -- routing provenance -----------------------------------------------------
+
+
+def test_the_selected_endpoint_names_the_provider_that_served_the_turn():
+    """The live metadata reports routing under ``endpoints.available``, marking
+    the chosen one ``selected``; ``attempts`` is present only when the router
+    had to retry. Reading ``attempts`` alone left ``provider`` unset on every
+    ordinary call, so ``run_manifest.json`` recorded no provider at all — the
+    one fact that distinguishes a run served entirely by one endpoint from a
+    run whose turns were split across two.
+    """
+    sdk = _FakeSDK([
+        _chunk(delta=_ns(content="ok", reasoning=None, refusal=None,
+                         reasoning_details=None, tool_calls=None), finish="stop"),
+        _chunk(metadata=_ns(
+            attempts=None,
+            endpoints=_ns(total=2, available=[
+                _ns(model="google/gemini-3.7-flash-20260813", provider="Google AI Studio",
+                    selected=False),
+                _ns(model="google/gemini-3.7-flash-20260813", provider="Google", selected=True),
+            ]),
+        )),
+    ])
+
+    response = OpenRouterChatClient(sdk).complete(_bare_request())
+
+    assert response.provider == "Google"
+    assert response.resolved_model == "google/gemini-3.7-flash-20260813"
+
+
+def test_a_retry_chain_still_names_the_endpoint_that_answered():
+    """When the router did retry, the successful attempt is authoritative."""
+    sdk = _FakeSDK([
+        _chunk(delta=_ns(content="ok", reasoning=None, refusal=None,
+                         reasoning_details=None, tool_calls=None), finish="stop"),
+        _chunk(metadata=_ns(
+            attempts=[
+                _ns(model="failed/model", provider="Bad", status=500),
+                _ns(model="resolved/model", provider="Good", status=200),
+            ],
+            endpoints=_ns(total=1, available=[
+                _ns(model="resolved/model", provider="Good", selected=True),
+            ]),
+        )),
+    ])
+
+    response = OpenRouterChatClient(sdk).complete(_bare_request())
+
+    assert response.provider == "Good"

@@ -259,6 +259,23 @@ class OpenRouterChatClient:
                             usage_obj = chunk_usage
                         metadata = getattr(chunk, "openrouter_metadata", None)
                         if metadata is not None and _is_present(metadata):
+                            # `endpoints.available` is always reported and marks the
+                            # chosen endpoint; `attempts` appears only when the router
+                            # had to retry, so it is read second and wins when present.
+                            endpoints = getattr(metadata, "endpoints", None)
+                            for endpoint in (
+                                getattr(endpoints, "available", None) or []
+                                if endpoints is not None and _is_present(endpoints)
+                                else []
+                            ):
+                                if getattr(endpoint, "selected", False) is not True:
+                                    continue
+                                chosen_model = getattr(endpoint, "model", None)
+                                chosen_provider = getattr(endpoint, "provider", None)
+                                if isinstance(chosen_model, str) and chosen_model:
+                                    resolved_model = chosen_model
+                                if isinstance(chosen_provider, str) and chosen_provider:
+                                    provider = chosen_provider
                             for attempt in getattr(metadata, "attempts", None) or []:
                                 if getattr(attempt, "status", None) == 200:
                                     attempt_model = getattr(attempt, "model", None)
