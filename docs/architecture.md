@@ -671,10 +671,11 @@ without disturbing the rest. CI installs with `uv sync --locked`, which fails
 rather than re-resolving when the lockfile has drifted from `pyproject.toml`,
 so a dependency change that skips `uv lock` turns the build red.
 
-The lockfile is a contributor tool, not the supported install path: instructors
-follow [Getting started](getting-started.md), and the `minimum declared
-dependencies` CI job deliberately ignores `uv.lock` so the floors declared in
-`pyproject.toml` stay exercised.
+The lockfile is the supported install path for everyone, not just contributors:
+[Getting started](getting-started.md) has instructors run the same `uv sync`.
+The `minimum declared dependencies` CI job is the one place that deliberately
+ignores `uv.lock`, installing with `uv pip install --resolution lowest-direct`
+so the floors declared in `pyproject.toml` stay exercised.
 
 Ruff checks source, scripts, and tests; mypy checks source and scripts. Their
 rule sets live in `pyproject.toml`, and their versions are pinned in the `dev`

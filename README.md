@@ -33,15 +33,18 @@ output reference, and contributor architecture, see the
 
 ## Test it out
 
-Here is how to conduct a test grading run on a synthetic (i.e., made up) student submission. Here, we use Qwen3.8-Max.
+Here is how to conduct a test grading run on a synthetic (i.e., made up) student submission. Here, we use Qwen3.8-Max. It assumes you have [uv](https://docs.astral.sh/uv/getting-started/installation/) installed.
 
 ```bash
+git clone https://github.com/johnswyou/autograder.git
 cd autograder
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-.venv/bin/python examples/generate_sample.py
+uv sync
+uv run python examples/generate_sample.py
 ```
+
+`uv sync` creates `.venv/` from the committed `uv.lock`, so you install the same
+dependency versions continuous integration does, and it downloads a suitable
+Python if your system has none.
 
 Make sure your `OPENROUTER_API_KEY` is exported:
 
@@ -52,7 +55,7 @@ export OPENROUTER_API_KEY="<YOUR_API_KEY>"
 Then, run this:
 
 ```bash
-.venv/bin/autograder grade \
+uv run autograder grade \
 --model qwen/qwen3.8-max \
 --assignment examples/sample/sample_assignment.pdf \
 --submissions examples/sample/submissions \
@@ -67,7 +70,7 @@ Then, run this:
 For real inputs, replace the paths and always choose a fresh `--out` directory:
 
 ```bash
-.venv/bin/autograder grade \
+uv run autograder grade \
 --model qwen/qwen3.8-max \
 --assignment path/to/assignment.pdf \
 --submissions path/to/submissions \

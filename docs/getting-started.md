@@ -1,40 +1,53 @@
 # Getting started
 
 This guide takes an instructor from a fresh checkout to a reviewed synthetic
-grading run. The commands assume a macOS or Linux shell and are run from the
-repository root.
+grading run. The commands assume a macOS or Linux shell and, after step 2, are
+run from the repository root.
 
 The example is deliberately typeset and contains no real student data. It lets
 you check document ingestion and answer mapping before using handwritten work;
 it does **not** measure handwriting or transcription quality.
 
-## 1. Check Python
+## 1. Install uv
 
-Agentic Autograder requires Python 3.10 or newer.
+Agentic Autograder is installed with [uv](https://docs.astral.sh/uv/), which
+manages the Python interpreter and the dependencies together.
 
 ```bash
-python --version
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv --version
 ```
 
-This reads the installed Python version and creates no files. Success is a
-version such as `Python 3.10.14` or later.
+On Windows PowerShell, install with
+`powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`.
+The installer writes to `~/.local/bin` and creates nothing in the checkout.
+Success is a version line such as `uv 0.11.28`. Skip this step if uv is already
+installed.
 
-## 2. Create an environment and install the command
+You do not need to install Python yourself. This project requires Python 3.10
+or newer, and uv downloads a matching interpreter when your system has none.
+
+## 2. Get the code and install the command
 
 ```bash
-python -m venv .venv
+git clone https://github.com/johnswyou/autograder.git
+cd autograder
+uv sync
 source .venv/bin/activate
-python -m pip install -e .
 autograder --help
 ```
 
-These commands create `.venv/`, activate it for the current shell, install this
-checkout and its dependencies, and display the command-line help. The installer
-may also create editable-install metadata in the checkout. Success means the
-last command exits normally and lists `inspect`, `solve`, `rubric`, and `grade`.
+These commands copy the project into `autograder/`, create `.venv/` inside it,
+install the project and its dependencies at the exact versions recorded in
+`uv.lock`, activate the environment for the current shell, and display the
+command-line help. Because `uv.lock` is committed, you install the same versions
+continuous integration does. Success means the last command exits normally and
+lists `inspect`, `solve`, `rubric`, and `grade`.
 
 On Windows PowerShell, replace the activation command with
 `.venv\Scripts\Activate.ps1`; the installation and success signal are the same.
+Activation is what lets every later command in this guide start with a bare
+`autograder`; without it, prefix them with `uv run` instead.
 
 ## 3. Understand the data and cost boundary
 
