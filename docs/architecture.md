@@ -215,6 +215,13 @@ dependencies. Python then:
 - derives a total only when every leaf has printed points; and
 - rejects a result with no gradable leaves.
 
+Before that, the submission itself must survive a completeness check:
+`AgentTask.result_check` returns the spec to the model when it leaves more than
+a third of the pages carrying no problem, or when its printed leaf values
+cannot reconcile with the printed total. The agent gets the specific gap and a
+bounded number of retries. Page coverage is skipped for text sources, whose
+pages are chunk boundaries. The check catches abandonment, not omission.
+
 Only leaves are graded. Their stable IDs join solutions, rubric entries,
 mapping, transcripts, and grades. The instructor must inspect
 `assignment_spec.json`; normalization makes the structure usable, but it cannot
@@ -254,11 +261,22 @@ that was unavailable.
 task to build rubric criteria consistently across the assignment. Missing
 entries can be generated unless strict-rubric policy rejects them.
 
-Python owns the point contract. Printed leaf points take precedence. When no
-points appear anywhere, each leaf receives one point. Otherwise an ambiguous
-allocation requires a complete instructor rubric whose leaf weights satisfy all
-printed leaf, parent, and assignment totals. Conflicts raise
-`PointAllocationError`; the model is not allowed to guess them. For an accepted
+Python owns the point contract. Printed leaf points take precedence, then a
+supplied rubric entry, then derivation: the nearest printed parent total, with
+the assignment total as the outermost parent, divides evenly among the parts it
+has points left for. A leaf outside every printed total — because none exists,
+or because its enclosing total is already spent by printed siblings — receives
+one point, and every total enclosing such a leaf is exempted from checking,
+since it is evidence only about the leaves it covers. Printed totals that
+contradict each other still raise `PointAllocationError`; the model is not
+allowed to guess them, and derivation never overrides a printed value.
+
+`Pipeline.preflight_points` resolves the allocation between the spec and the
+solutions stage of `run_rubric` and `run_grade`, including for a cached spec,
+and logs every weight it had to derive. An allocation that cannot resolve fails
+there rather than after the solutions have been generated and billed. It stands
+down when a teacher rubric is supplied, because that rubric is not parsed until
+the rubric stage and may carry the missing weights. For an accepted
 allocation, Python drops stray entries, restores leaf order, fills empty
 criteria, makes criterion IDs unique, proportionally rescales criterion sums,
 corrects rounding drift, and recomputes the rubric total. A cached rubric is

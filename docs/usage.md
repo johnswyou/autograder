@@ -98,6 +98,15 @@ or grading students.** Every later artifact is keyed to the lowest-level
 problem IDs found here, so an incorrect hierarchy can attach solutions,
 criteria, work, and scores to the wrong problem.
 
+`inspect` rejects an obviously incomplete inventory before saving it: a spec
+leaving more than a third of the document's pages with no problem on them, or
+whose printed leaf values cannot be reconciled with the printed total, is
+returned to the model with the specific gap named, and the command fails if the
+model cannot close it. Page coverage is not checked for Markdown and LaTeX
+sources, whose pages are chunk boundaries rather than printed pages. The check
+catches abandonment, not subtle omissions, so it does not replace your reading
+of the spec.
+
 ```bash
 autograder inspect \
     --assignment examples/sample/sample_assignment.pdf \
@@ -153,14 +162,16 @@ unverified prerequisite lists, before approving a rubric or grades.
 ## Choose and approve the rubric
 
 **Resolve the point source first, then decide whether missing rubric content
-may be generated.** The program never guesses how to divide an ambiguous
-printed total.
+may be generated.** The program divides a printed total evenly when the
+assignment prices a question but not its parts; it never overrides a printed
+value, and it never reconciles two printed values that disagree.
 
 | What the blank assignment establishes | Required action | Consequence |
 |---|---|---|
 | Every lowest-level problem has a printed value | You may omit `--rubric` or provide one with matching per-problem weights. | Printed leaf values are authoritative. A conflicting supplied weight stops the run. |
 | No point values and no assignment or parent total appear anywhere | You may omit `--rubric`. | Each lowest-level problem receives 1 point. |
-| Some values or a parent/assignment total appear, but not every lowest-level weight is determined | Supply a complete teacher rubric with exactly one explicit weighted entry per lowest-level problem. | Without it, the run stops before rubric generation. The program does not invent a split. |
+| A parent or assignment total is printed but its lowest-level problems are not | You may omit `--rubric`; supply one to set the weights yourself. | The total is split evenly among the parts it covers, and the split is logged before solutions are generated. A supplied weight takes precedence. |
+| Lowest-level problems fall outside every printed total, or their enclosing total is already spent | You may omit `--rubric`; supply one to weight them yourself. | Each receives 1 point, and any printed total spanning them is no longer checked, because it demonstrably does not cover them. |
 | A complete point allocation conflicts with a printed leaf, parent, or assignment total | Correct the assignment source or teacher rubric. | The run stops; neither generated criteria nor strict mode overrides the conflict. |
 
 If you provide no rubric, the program generates criteria from the assignment
