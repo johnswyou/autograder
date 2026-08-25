@@ -667,6 +667,7 @@ def test_manifest_uses_atomic_writer_and_records_tool_version(
             reasoning_effort="high",
             zero_data_retention=False,
             allow_data_collection=True,
+            provider_sort="throughput",
         ),
         {},
         [],
@@ -698,6 +699,7 @@ def test_manifest_uses_atomic_writer_and_records_tool_version(
     assert manifest["config"]["reasoning_effort"] == "high"
     assert manifest["config"]["zero_data_retention"] is False
     assert manifest["config"]["allow_data_collection"] is True
+    assert manifest["config"]["provider_sort"] == "throughput"
     assert manifest["usage"]["cost_usd"] == 0.02
     serialized = writes[0][1]
     assert "secret-never-persisted" not in serialized
@@ -1091,12 +1093,14 @@ def test_cli_parsing():
     args = p.parse_args([
         "grade", "-a", "hw.pdf", "-o", "out", "-S", "subs/",
         "--rubric-prompt", "weight method", "--reasoning-effort", "high",
+        "--provider-sort", "throughput",
         "--allow-data-retention", "--allow-data-collection",
         "--strict-rubric", "--ocr-threshold", "0.7",
     ])
     cfg = _to_config(args)
     assert args.command == "grade" and args.submissions == ["subs/"]
     assert cfg.reasoning_effort == "high"
+    assert cfg.provider_sort == "throughput"
     assert cfg.zero_data_retention is False
     assert cfg.allow_data_collection is True
     assert cfg.strict_rubric and cfg.ocr_review_threshold == 0.7
@@ -1106,6 +1110,10 @@ def test_cli_parsing():
 
     args = p.parse_args(["inspect", "-a", "hw.pdf", "-o", "out"])
     assert args.command == "inspect"
+    assert _to_config(args).provider_sort is None
+
+    with pytest.raises(SystemExit):
+        p.parse_args(["inspect", "-a", "hw.pdf", "-o", "out", "--provider-sort", "cheapest"])
 
 
 def test_cli_reads_only_openrouter_api_key(monkeypatch):
@@ -1137,6 +1145,8 @@ def test_cli_help_explains_output_reuse_and_force(
     ) in help_text
     assert "OpenRouter model slug" in help_text
     assert "--reasoning-effort" in help_text
+    assert "--provider-sort" in help_text
+    assert "omit to keep OpenRouter's default balancing" in help_text
     assert "--allow-data-retention" in help_text
     assert "--allow-data-collection" in help_text
     assert "Rebuild this command's results instead of reusing saved results" in help_text

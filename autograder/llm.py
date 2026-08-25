@@ -398,12 +398,17 @@ def _evict_stale_images(messages: list[dict[str, Any]], max_tool_images: int) ->
 
 
 def _provider_policy(cfg: RunConfig) -> dict[str, Any]:
-    return {
+    policy: dict[str, Any] = {
         "allow_fallbacks": True,
         "require_parameters": True,
         "zdr": cfg.zero_data_retention,
         "data_collection": "allow" if cfg.allow_data_collection else "deny",
     }
+    # Sending `sort` at all replaces OpenRouter's load balancing with a fixed
+    # ranking, so the key stays out of the request unless one was asked for.
+    if cfg.provider_sort is not None:
+        policy["sort"] = cfg.provider_sort
+    return policy
 
 
 def _tool_error(call_id: str, message: str) -> dict[str, Any]:

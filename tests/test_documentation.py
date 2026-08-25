@@ -437,7 +437,7 @@ def test_cli_contract_catches_changed_submissions_arity() -> None:
         _assert_cli_option_contract(rows, parser)
 
 
-@pytest.mark.parametrize("destination", ["reasoning_effort"])
+@pytest.mark.parametrize("destination", ["reasoning_effort", "provider_sort"])
 def test_cli_contract_catches_changed_choices(destination: str) -> None:
     parser = build_parser()
     inspect_parser = _subparser_action(parser).choices["inspect"]

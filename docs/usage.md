@@ -435,12 +435,64 @@ resumptions. A `reasoning` field in `solutions_manual.json` is instead the
 model's submitted worked explanation for an official solution; it is not the
 provider reasoning stream.
 
+## Choose a provider sort
+
+**Treat `--provider-sort` as a ranking among the providers a request could
+already have used, not as a way to pick one.** It is a shared option on every
+subcommand and is written after the subcommand:
+
+```bash
+autograder grade \
+    --assignment examples/sample/sample_assignment.pdf \
+    --submissions examples/sample/submissions \
+    --out runs/sample-demo-fast \
+    --provider-sort throughput
+```
+
+The accepted values are `price`, `throughput`, `latency`, and `exacto`. The
+first three rank the eligible endpoints by cost, by generation speed, and by
+recent response latency. `exacto` is OpenRouter's own accuracy-oriented
+ranking; confirm what it selects on the
+[provider routing](https://openrouter.ai/docs/guides/routing/provider-selection)
+page before relying on it for graded work.
+
+Eligibility is decided before the ranking is applied. The selected model, the
+requirement that a provider support every supplied parameter, and the run's
+privacy policy all narrow the endpoint set first; the sort only orders what
+survives. With `--reasoning-effort` set and zero data retention required, that
+set can already be a single endpoint, in which case the option changes nothing.
+
+| Configuration | What the client sends | Consequence |
+|---|---|---|
+| Omit `--provider-sort` | No `sort` field | OpenRouter balances load across the eligible endpoints. |
+| `--provider-sort STRATEGY` | The chosen ranking on every model request | Endpoints are tried in that order, and load balancing is disabled for the run. |
+
+Each agent loop sends a sticky session ID, so the provider chosen for its first
+turn serves the rest of that loop. A grading run contains many independent
+loops, and the default `openrouter/auto-beta` model resolves separately in each
+one. The ranking therefore steers many first choices rather than pinning one
+provider to the whole run.
+
+Unlike reasoning effort, a provider sort is not part of the output directory's
+run-binding identity, so it can be changed on an existing `--out` directory. It
+ranks endpoints that were already permitted rather than promising anything
+about who saw the data, and nothing in the binding pins the endpoint that
+served a request in the first place. Stages that load a compatible saved
+artifact still make no model call, so a changed ranking has no retroactive
+effect on work already done.
+
+Sorting by throughput or latency can route to more expensive endpoints than the
+balanced default would have chosen. `run_manifest.json` records the requested
+sort alongside the providers actually reached and the cost for that command
+invocation, so compare a representative run before adopting a ranking for a
+whole roster.
+
 ## Manage cost, latency, and concurrency
 
 **Choose model quality and the reasoning setting described above before binding
 the output directory, then control concurrency to fit your API limits.** Model,
 reasoning effort, privacy routing, and output-token changes require a fresh
-directory; worker count does not.
+directory; worker count and provider sort do not.
 
 Cost is concentrated as follows:
 
