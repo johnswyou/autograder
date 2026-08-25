@@ -274,10 +274,12 @@ normalized output total is recomputed from accepted problem weights.
 
 Unknown problem entries are warned about and dropped. Missing leaf entries are
 generated unless `--strict-rubric` is set. After coverage, the runtime enforces
-authoritative point values: explicit printed leaf weights win; with no printed
-values or totals each leaf defaults to one point; an ambiguous partial or
-aggregate allocation requires a complete teacher rubric. Conflicting leaf,
-parent, or assignment totals stop the run. Criterion weights are proportionally
+authoritative point values in this order: an explicit printed leaf weight wins;
+otherwise a supplied rubric entry; otherwise the nearest printed parent total,
+including the assignment total, split evenly among the parts it still has
+points for. A leaf no printed total can pay for defaults to one point, and any
+total enclosing such a leaf is not checked, because it does not cover it.
+Conflicting printed leaf, parent, or assignment totals stop the run. Criterion weights are proportionally
 rescaled to the authoritative problem weight, empty positive criteria become
 one full-credit criterion, duplicate IDs are renamed, and the total is
 recomputed.
