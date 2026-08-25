@@ -474,12 +474,16 @@ one. The ranking therefore steers many first choices rather than pinning one
 provider to the whole run.
 
 Unlike reasoning effort, a provider sort is not part of the output directory's
-run-binding identity, so it can be changed on an existing `--out` directory. It
-ranks endpoints that were already permitted rather than promising anything
-about who saw the data, and nothing in the binding pins the endpoint that
-served a request in the first place. Stages that load a compatible saved
-artifact still make no model call, so a changed ranking has no retroactive
-effect on work already done.
+run-binding identity. You can change it and keep the same `--out` directory,
+where a changed model or reasoning effort requires a fresh one.
+
+The binding records settings that change what a saved artifact means. The
+privacy options qualify, because they are guarantees about who was allowed to
+see the data. A ranking is not such a guarantee: it only orders endpoints the
+model requirements and the privacy policy have already admitted, and the
+binding never pinned the endpoint that served any given request. Rerunning with
+a different ranking cannot alter existing work either, because a stage that
+finds a compatible saved artifact loads it without calling the model.
 
 Sorting by throughput or latency can route to more expensive endpoints than the
 balanced default would have chosen. `run_manifest.json` records the requested
