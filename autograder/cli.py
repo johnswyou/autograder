@@ -18,7 +18,7 @@ import os
 import sys
 from pathlib import Path
 
-from .config import DEFAULT_MODEL, REASONING_EFFORTS, RunConfig
+from .config import DEFAULT_MODEL, PROVIDER_SORTS, REASONING_EFFORTS, RunConfig
 from .orchestrator import PartialGradeFailure, Pipeline
 
 log = logging.getLogger("autograder")
@@ -69,6 +69,11 @@ def _parent_parser() -> argparse.ArgumentParser:
                      ))
     opt.add_argument("--reasoning-effort", choices=REASONING_EFFORTS, default=None,
                      help="Model reasoning effort; omit to use the selected model's default")
+    opt.add_argument("--provider-sort", choices=PROVIDER_SORTS, default=None,
+                     help=(
+                         "Rank the providers a request may use by this property; "
+                         "omit to keep OpenRouter's default balancing"
+                     ))
     opt.add_argument("--allow-data-retention", action="store_true",
                      help="Allow routing to providers that retain prompt data")
     opt.add_argument("--allow-data-collection", action="store_true",
@@ -185,6 +190,7 @@ def _to_config(args: argparse.Namespace) -> RunConfig:
         api_key=args.api_key or os.environ.get("OPENROUTER_API_KEY"),
         max_workers=args.max_workers,
         reasoning_effort=args.reasoning_effort,
+        provider_sort=args.provider_sort,
         zero_data_retention=not args.allow_data_retention,
         allow_data_collection=args.allow_data_collection,
         force=args.force,

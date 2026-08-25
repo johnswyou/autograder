@@ -54,6 +54,7 @@ the live parser; automatic `argparse` help actions are explicitly excluded.
 | `all` | `--max-workers` | `max_workers` | `1` | `store` | `any` | Positive integer | `4` | Maximum concurrent model tasks inside a parallel stage. Students themselves are processed sequentially. |
 | `all` | `--max-tokens` | `max_tokens` | `1` | `store` | `any` | Positive integer | `null` | Raises both configured token limits. A value below either built-in limit has no effect. |
 | `all` | `--reasoning-effort` | `reasoning_effort` | `1` | `store` | `none, minimal, low, medium, high, xhigh, max` | One listed effort | `null` | Optional run-wide reasoning preference. Omission uses the selected model's default; see [Choose a reasoning effort](usage.md#choose-a-reasoning-effort). |
+| `all` | `--provider-sort` | `provider_sort` | `1` | `store` | `price, throughput, latency, exacto` | One listed strategy | `null` | Ranks the endpoints already eligible for a request instead of letting OpenRouter balance across them. Omission keeps that balancing; see [Choose a provider sort](usage.md#choose-a-provider-sort). |
 | `all` | `--allow-data-retention` | `allow_data_retention` | `0` | `store_true` | `any` | Flag with no value | `false` | Opts out of the default zero-data-retention routing requirement. |
 | `all` | `--allow-data-collection` | `allow_data_collection` | `0` | `store_true` | `any` | Flag with no value | `false` | Opts out of the default denial of providers that collect or train on request data. |
 | `all` | `--force` | `force` | `0` | `store_true` | `any` | Flag with no value | `false` | Rebuilds requested stages instead of loading saved artifacts. It cannot override a binding mismatch. |
@@ -566,6 +567,7 @@ mechanically.
 | `reasoning_effort` | `null` | null, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; `--reasoning-effort` | yes |
 | `zero_data_retention` | `true` | Boolean; `--allow-data-retention` sets false | yes |
 | `allow_data_collection` | `false` | Boolean; `--allow-data-collection` sets true | yes |
+| `provider_sort` | `null` | null, `price`, `throughput`, `latency`, or `exacto`; `--provider-sort` | no |
 | `strict_rubric` | `false` | Boolean; `--strict-rubric` | yes |
 | `strict_solutions` | `false` | Boolean; `--strict-solutions` | yes |
 | `verify_provided_solutions` | `false` | Boolean; `--verify-provided-solutions` | yes |
@@ -594,8 +596,8 @@ Construction validates all listed ranges. The implementation does not perform
 general runtime type coercion for dataclass callers, so integrations should
 pass the stated Python types. `cache_identity()` contains exactly the fields
 marked `yes`; it intentionally omits settings that change credentials,
-execution mechanics, logging, or review routing without redefining saved
-content.
+execution mechanics, logging, provider ranking, or review routing without
+redefining saved content.
 
 The internal CLI conversion resolves the environment API key, raises both
 token fields, maps both privacy opt-outs, and maps `ocr_threshold` to

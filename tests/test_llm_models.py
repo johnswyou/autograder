@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-from autograder.config import DEFAULT_MODEL, REASONING_EFFORTS, RunConfig
+from autograder.config import DEFAULT_MODEL, PROVIDER_SORTS, REASONING_EFFORTS, RunConfig
 from autograder.llm import (
     SUBMIT_TOOL_NAME,
     AgentError,
@@ -54,6 +54,15 @@ def test_default_model_and_reasoning_efforts_are_exact():
         RunConfig(reasoning_effort="extreme")
 
 
+def test_provider_sorts_are_exact_and_validated():
+    assert PROVIDER_SORTS == ("price", "throughput", "latency", "exacto")
+    for sort in PROVIDER_SORTS:
+        assert RunConfig(provider_sort=sort).provider_sort == sort
+    assert RunConfig().provider_sort is None
+    with pytest.raises(ValueError, match="provider_sort must be one of"):
+        RunConfig(provider_sort="cheapest")
+
+
 def test_cache_identity_uses_reasoning_and_privacy_not_anthropic_fields():
     identity = RunConfig(
         reasoning_effort="high",
@@ -66,6 +75,14 @@ def test_cache_identity_uses_reasoning_and_privacy_not_anthropic_fields():
     assert "thinking" not in identity
     assert "effort" not in identity
     assert "prompt_caching" not in identity
+
+
+def test_cache_identity_ignores_provider_sort_so_a_directory_stays_reusable():
+    default = RunConfig().cache_identity()
+    sorted_run = RunConfig(provider_sort="throughput").cache_identity()
+
+    assert "provider_sort" not in default
+    assert sorted_run == default
 
 
 def test_run_agent_submits_and_sends_exact_openrouter_policy(cfg: RunConfig):
@@ -121,6 +138,25 @@ def test_privacy_opt_outs_change_only_provider_privacy_values(cfg: RunConfig):
         "require_parameters": True,
         "zdr": False,
         "data_collection": "allow",
+    }
+
+
+def test_provider_sort_is_omitted_unless_configured(cfg: RunConfig):
+    client = make_stub_client([turn(tool_use(SUBMIT_TOOL_NAME, {"answer": "a", "score": 1}))])
+    run_agent(client, cfg, _task(), None)
+    assert "sort" not in client.calls[0].provider
+
+
+def test_provider_sort_adds_only_the_sort_key_to_the_provider_policy(cfg: RunConfig):
+    cfg.provider_sort = "throughput"
+    client = make_stub_client([turn(tool_use(SUBMIT_TOOL_NAME, {"answer": "a", "score": 1}))])
+    run_agent(client, cfg, _task(), None)
+    assert client.calls[0].provider == {
+        "allow_fallbacks": True,
+        "require_parameters": True,
+        "zdr": True,
+        "data_collection": "deny",
+        "sort": "throughput",
     }
 
 
@@ -687,6 +723,11 @@ def test_installed_sdk_validates_canonical_messages_tools_and_provider():
         "zdr": True,
         "data_collection": "deny",
     }
+    for sort in PROVIDER_SORTS:
+        parsed_sort = utils.get_pydantic_model(
+            {**provider, "sort": sort}, components.ProviderPreferences
+        )
+        assert parsed_sort.sort == sort
 
     parsed_messages = utils.get_pydantic_model(messages, list[components.ChatMessages])
     parsed_tools = utils.get_pydantic_model(tools, list[components.ChatFunctionTool])

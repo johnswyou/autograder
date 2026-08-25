@@ -16,6 +16,12 @@ REASONING_EFFORTS: tuple[ReasoningEffort, ...] = (
     "none", "minimal", "low", "medium", "high", "xhigh", "max",
 )
 
+# The four strategies the generated SDK names in `components.ProviderSort`. The
+# SDK also accepts an unrecognized string so a new server-side strategy is not a
+# client error; the parser restricts the CLI to the documented set.
+ProviderSort = Literal["price", "throughput", "latency", "exacto"]
+PROVIDER_SORTS: tuple[ProviderSort, ...] = ("price", "throughput", "latency", "exacto")
+
 SUPPORTED_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".md", ".markdown", ".tex"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
 TEXT_EXTS = {".md", ".markdown", ".tex"}
@@ -51,6 +57,7 @@ class RunConfig:
     reasoning_effort: ReasoningEffort | None = None
     zero_data_retention: bool = True
     allow_data_collection: bool = False
+    provider_sort: ProviderSort | None = None  # order eligible providers; None keeps load balancing
 
     # cost controls for the agent loop
     max_tool_images: int = 20         # tool-result images kept per agent before evicting the oldest
@@ -94,6 +101,10 @@ class RunConfig:
             raise ValueError(
                 f"reasoning_effort must be one of: {', '.join(REASONING_EFFORTS)}"
             )
+        if self.provider_sort is not None and self.provider_sort not in PROVIDER_SORTS:
+            raise ValueError(
+                f"provider_sort must be one of: {', '.join(PROVIDER_SORTS)}"
+            )
 
     def cache_identity(self) -> dict[str, object]:
         """Return the settings that determine compatible cached artifacts.
@@ -108,6 +119,18 @@ class RunConfig:
         how any of them were produced. Their effect is recomputed on every read
         by ``grading.apply_review_thresholds``, so a directory graded under one
         pair of thresholds can be re-read under another.
+
+        ``provider_sort`` is absent for a third reason. The privacy settings
+        below it are recorded because they are *guarantees* about who was
+        allowed to see the data, and artifacts made under a weaker guarantee
+        must not be reused under a stronger one. A sort order promises nothing:
+        it only ranks endpoints that the model, the parameter requirements, and
+        the privacy policy already admit. Nothing here pins the endpoint that
+        actually served a request anyway -- fallbacks are enabled, and the
+        default dynamic model resolves per session -- so binding a directory to
+        a ranking would claim a reproducibility this run does not have.
+        ``run_manifest.json`` records the requested sort and the providers a
+        command actually reached, which is where that provenance belongs.
         """
         return {
             "model": self.model,
