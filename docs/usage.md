@@ -485,6 +485,12 @@ binding never pinned the endpoint that served any given request. Rerunning with
 a different ranking cannot alter existing work either, because a stage that
 finds a compatible saved artifact loads it without calling the model.
 
+That freedom has an audit cost. A directory whose stages were built under
+different rankings keeps no record of which stage used which, and
+`run_manifest.json` describes only the command that wrote it last. Run each
+ranking into its own `--out` directory whenever you may need to say what
+produced a particular grade.
+
 Sorting by throughput or latency can route to more expensive endpoints than the
 balanced default would have chosen. `run_manifest.json` records the requested
 sort alongside the providers actually reached and the cost for that command
