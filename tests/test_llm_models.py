@@ -822,3 +822,88 @@ def test_spec_traversal_and_dependency_levels(small_spec: AssignmentSpec):
 def test_dependency_cycle_still_schedules_everything(small_spec: AssignmentSpec):
     small_spec.find("1a").depends_on = ["1b"]
     assert sorted(pid for level in dependency_levels(small_spec) for pid in level) == ["1a", "1b", "2"]
+
+
+class _ProviderRefusal(Exception):
+    """Shaped like ``openrouter.errors.OpenRouterError``.
+
+    ``__str__`` yields only OpenRouter's short wrapper message, while the
+    response body carries the provider's own explanation.
+    """
+
+    def __init__(self, message: str, body: str):
+        super().__init__(message)
+        self.message = message
+        self.body = body
+
+    def __str__(self) -> str:
+        return self.message
+
+
+_REFUSAL_BODY = (
+    '{"error":{"code":400,"message":"Provider returned error","metadata":'
+    '{"provider_name":"Google AI Studio","raw":"Invalid JSON payload received. '
+    'Unknown name \\"$defs\\" at tools[0].function_declarations[0].parameters"}}}'
+)
+
+
+def _refusing_client(where: str) -> OpenRouterChatClient:
+    sdk = _FakeSDK([])
+    error = _ProviderRefusal("Provider returned error", _REFUSAL_BODY)
+
+    def raise_it(**kwargs):
+        raise error
+
+    def raise_on_iter(**kwargs):
+        raise error
+
+    if where == "send":
+        sdk.chat.send = raise_it
+    else:
+        sdk.chat.send = lambda **kwargs: _RaisingStream(error)
+    return OpenRouterChatClient(sdk)
+
+
+class _RaisingStream:
+    def __init__(self, error: Exception):
+        self._error = error
+
+    def __enter__(self):
+        raise self._error
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def _bare_request() -> ChatRequest:
+    return ChatRequest(
+        messages=[], tools=[], model="m", max_tokens=1,
+        reasoning_effort=None, provider={}, session_id="s",
+    )
+
+
+def test_a_pre_stream_provider_refusal_reports_what_the_provider_said():
+    """OpenRouter answers 'Provider returned error' for anything upstream
+    refused. Without the body, an operator cannot tell an unusable tool schema
+    from a transient fault, and has to open the OpenRouter dashboard to find
+    out which one cost them the run."""
+    with pytest.raises(AgentError) as caught:
+        _refusing_client("send").complete(_bare_request())
+
+    assert "Provider returned error" in str(caught.value)
+    assert "Google AI Studio" in str(caught.value)
+    assert "$defs" in str(caught.value)
+
+
+def test_a_mid_stream_provider_refusal_reports_what_the_provider_said():
+    with pytest.raises(AgentError) as caught:
+        _refusing_client("stream").complete(_bare_request())
+
+    assert "Google AI Studio" in str(caught.value)
+
+
+def test_an_error_carrying_no_body_is_reported_unchanged():
+    sdk = _FakeSDK([])
+    sdk.chat.send = lambda **kwargs: (_ for _ in ()).throw(RuntimeError("offline"))
+    with pytest.raises(AgentError, match=r"before streaming: offline$"):
+        OpenRouterChatClient(sdk).complete(_bare_request())

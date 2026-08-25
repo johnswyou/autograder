@@ -12,7 +12,7 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from .config import ReasoningEffort, RunConfig
+from .config import ReasoningEffort, RunConfig, short
 from .tools import Block, ToolKit, text_block
 
 log = logging.getLogger("autograder")
@@ -161,6 +161,26 @@ def _is_present(value: Any) -> bool:
     return value is not UNSET
 
 
+_ERROR_BODY_LIMIT = 700
+
+
+def _describe_transport_error(exc: Exception) -> str:
+    """Render an SDK error in the provider's own words, not just the wrapper's.
+
+    ``OpenRouterError.__str__`` returns only OpenRouter's short ``error.message``,
+    which is the constant "Provider returned error" for anything an upstream
+    provider refused. The response body it also carries holds that provider's
+    account of what it refused and why. Reporting only the wrapper leaves an
+    operator unable to tell an unusable tool schema from a transient fault
+    without opening the OpenRouter dashboard.
+    """
+    described = str(exc)
+    body = getattr(exc, "body", None)
+    if not isinstance(body, str) or not body.strip() or body.strip() in described:
+        return described
+    return f"{described} — provider response: {short(body.strip(), _ERROR_BODY_LIMIT)}"
+
+
 def _number(value: Any, default: int | float = 0) -> int | float:
     if not _is_present(value) or value is None:
         return default
@@ -205,7 +225,10 @@ class OpenRouterChatClient:
             try:
                 stream_manager = self._sdk.chat.send(**params)
             except Exception as exc:
-                raise AgentError(f"OpenRouter request failed before streaming: {exc}") from exc
+                raise AgentError(
+                    "OpenRouter request failed before streaming: "
+                    f"{_describe_transport_error(exc)}"
+                ) from exc
 
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
@@ -303,7 +326,9 @@ class OpenRouterChatClient:
             except AgentError:
                 raise
             except Exception as exc:
-                raise AgentError(f"OpenRouter stream failed: {exc}") from exc
+                raise AgentError(
+                    f"OpenRouter stream failed: {_describe_transport_error(exc)}"
+                ) from exc
 
             calls: list[ToolCall] = []
             replay_calls: list[dict[str, Any]] = []
