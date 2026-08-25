@@ -958,3 +958,48 @@ def test_a_retry_chain_still_names_the_endpoint_that_answered():
     response = OpenRouterChatClient(sdk).complete(_bare_request())
 
     assert response.provider == "Good"
+
+
+# -- pinning the endpoints a run may reach ----------------------------------
+
+
+def test_no_allowlist_leaves_the_routing_policy_untouched():
+    from autograder.config import RunConfig
+    from autograder.llm import _provider_policy
+
+    assert "only" not in _provider_policy(RunConfig(model="m"))
+
+
+def test_an_allowlist_reaches_the_provider_policy_as_only():
+    """`only` is OpenRouter's allowlist of provider slugs. Fallbacks stay on:
+    the point is to keep the router inside the allowed set, not to forbid it
+    from trying a second endpoint within that set."""
+    from autograder.config import RunConfig
+    from autograder.llm import _provider_policy
+
+    policy = _provider_policy(RunConfig(model="m", provider_only=("google-ai-studio",)))
+
+    assert policy["only"] == ["google-ai-studio"]
+    assert policy["allow_fallbacks"] is True
+
+
+def test_the_allowlist_binds_the_output_directory():
+    """Unlike a sort order, an allowlist decides which companies were permitted
+    to process the submissions. That is the same kind of statement as the two
+    privacy flags beside it, so artifacts made under one allowlist must not be
+    silently reused under another."""
+    from autograder.config import RunConfig
+
+    wide = RunConfig(model="m").cache_identity()
+    narrow = RunConfig(model="m", provider_only=("google-ai-studio",)).cache_identity()
+
+    assert wide["provider_only"] == []
+    assert narrow["provider_only"] == ["google-ai-studio"]
+    assert wide != narrow
+
+
+def test_a_blank_provider_slug_is_rejected():
+    from autograder.config import RunConfig
+
+    with pytest.raises(ValueError, match="provider_only"):
+        RunConfig(model="m", provider_only=("google-ai-studio", "  ")).validate_limits()

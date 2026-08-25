@@ -461,6 +461,11 @@ def _provider_policy(cfg: RunConfig) -> dict[str, Any]:
     # ranking, so the key stays out of the request unless one was asked for.
     if cfg.provider_sort is not None:
         policy["sort"] = cfg.provider_sort
+    # `only` is an allowlist of provider slugs. Fallbacks stay enabled: the
+    # point is to keep every turn of an agent loop inside a set of endpoints
+    # known to serve it, not to forbid a second try within that set.
+    if cfg.provider_only:
+        policy["only"] = list(cfg.provider_only)
     return policy
 
 

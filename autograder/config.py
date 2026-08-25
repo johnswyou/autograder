@@ -58,6 +58,7 @@ class RunConfig:
     zero_data_retention: bool = True
     allow_data_collection: bool = False
     provider_sort: ProviderSort | None = None  # order eligible providers; None keeps load balancing
+    provider_only: tuple[str, ...] = ()  # allowlist of provider slugs; empty keeps every eligible one
 
     # cost controls for the agent loop
     max_tool_images: int = 20         # tool-result images kept per agent before evicting the oldest
@@ -105,6 +106,8 @@ class RunConfig:
             raise ValueError(
                 f"provider_sort must be one of: {', '.join(PROVIDER_SORTS)}"
             )
+        if any(not str(slug).strip() for slug in self.provider_only):
+            raise ValueError("provider_only entries must be non-empty provider slugs")
 
     def cache_identity(self) -> dict[str, object]:
         """Return the settings that determine compatible cached artifacts.
@@ -131,6 +134,13 @@ class RunConfig:
         a ranking would claim a reproducibility this run does not have.
         ``run_manifest.json`` records the requested sort and the providers a
         command actually reached, which is where that provenance belongs.
+
+        ``provider_only`` is recorded, for the opposite reason. An allowlist is
+        not a ranking: it decides which companies were permitted to see the
+        submissions at all, which is the same kind of statement as the two
+        privacy flags above, and it does pin the set of endpoints a turn can
+        reach. Artifacts produced under one allowlist must not be silently
+        reused under another.
         """
         return {
             "model": self.model,
@@ -152,6 +162,7 @@ class RunConfig:
             "strict_rubric": self.strict_rubric,
             "strict_solutions": self.strict_solutions,
             "verify_provided_solutions": self.verify_provided_solutions,
+            "provider_only": sorted(self.provider_only),
         }
 
 

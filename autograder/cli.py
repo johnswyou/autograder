@@ -74,6 +74,13 @@ def _parent_parser() -> argparse.ArgumentParser:
                          "Rank the providers a request may use by this property; "
                          "omit to keep OpenRouter's default balancing"
                      ))
+    opt.add_argument("--provider", dest="provider_only", action="append", default=None,
+                     metavar="SLUG",
+                     help=(
+                         "Restrict routing to this OpenRouter provider slug (e.g. "
+                         "google-ai-studio); repeat or comma-separate for several. "
+                         "Omit to allow every eligible provider"
+                     ))
     opt.add_argument("--allow-data-retention", action="store_true",
                      help="Allow routing to providers that retain prompt data")
     opt.add_argument("--allow-data-collection", action="store_true",
@@ -184,6 +191,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _provider_slugs(values: list[str] | None) -> tuple[str, ...]:
+    """Flatten repeated and comma-separated --provider values, order preserved."""
+    slugs: list[str] = []
+    for value in values or []:
+        for slug in str(value).split(","):
+            slug = slug.strip()
+            if slug and slug not in slugs:
+                slugs.append(slug)
+    return tuple(slugs)
+
+
 def _to_config(args: argparse.Namespace) -> RunConfig:
     cfg = RunConfig(
         model=args.model,
@@ -191,6 +209,7 @@ def _to_config(args: argparse.Namespace) -> RunConfig:
         max_workers=args.max_workers,
         reasoning_effort=args.reasoning_effort,
         provider_sort=args.provider_sort,
+        provider_only=_provider_slugs(args.provider_only),
         zero_data_retention=not args.allow_data_retention,
         allow_data_collection=args.allow_data_collection,
         force=args.force,

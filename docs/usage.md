@@ -508,6 +508,42 @@ sort alongside the providers actually reached and the cost for that command
 invocation, so compare a representative run before adopting a ranking for a
 whole roster.
 
+## Pin a provider
+
+**Use `--provider` when a run must stay on endpoints you know can serve it.**
+Where `--provider-sort` ranks the eligible endpoints, `--provider` decides
+which ones are eligible at all. It takes OpenRouter provider slugs, repeated or
+comma-separated, and is a shared option on every subcommand:
+
+```bash
+autograder grade \
+    --assignment examples/sample/sample_assignment.pdf \
+    --submissions examples/sample/submissions \
+    --out runs/sample-demo-pinned \
+    --provider google-ai-studio
+```
+
+Fallbacks stay enabled inside the allowlist, so the router may still try a
+second endpoint belonging to an allowed provider. Everything else that narrows
+the endpoint set — the model, the parameter requirement, the privacy policy —
+still applies first, and an allowlist that admits no endpoint fails the request
+rather than silently widening.
+
+The option exists because provider endpoints for one model are not
+interchangeable. Every agent loop here inspects pages, so tool results carry
+images, and an endpoint that cannot accept an image inside a tool result cannot
+run this program at all. When such an endpoint serves the first turn of a loop,
+the second turn fails with a provider error naming neither the image nor the
+endpoint. Look up the slugs a model offers at
+`https://openrouter.ai/api/v1/models/<author>/<slug>/endpoints`, and pin the one
+you verified.
+
+Unlike a sort, an allowlist is part of the run-binding identity. It decides
+which companies were permitted to see the submissions, which is the same kind
+of guarantee as the privacy options, so changing it requires a fresh `--out`
+directory. `run_manifest.json` records the providers each command actually
+reached, which is how you confirm a pin did what you intended.
+
 ## Manage cost, latency, and concurrency
 
 **Choose model quality and the reasoning setting described above before binding
