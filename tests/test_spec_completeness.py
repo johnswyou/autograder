@@ -190,3 +190,54 @@ def test_build_spec_does_not_page_check_a_markdown_assignment(tmp_path: Path, cf
 
     assert [p.id for p in spec.problems] == ["1"]
     assert len(client.calls) == 1
+
+
+# -- the guard must ask for the field it gates on ---------------------------
+
+
+def test_the_spec_prompt_asks_for_the_pages_the_guard_requires():
+    """``pages`` is optional on ``Problem`` (only ``id`` is required), so a model
+    fills it only if something tells it to. The page-coverage guard and the
+    solver's page context both depend on it, and the prompt asked for every
+    other optional field by name — ``figure_refs``, ``answer_region``,
+    ``choices``, ``answer_format`` — but never this one. A model that treated
+    unmentioned optional fields as optional produced a spec with no pages at
+    all, which the guard read as 'read nothing' and rejected until the run died.
+    """
+    from autograder.assignment import SPEC_SYSTEM
+
+    assert "`pages`" in SPEC_SYSTEM
+
+
+def test_a_spec_recording_no_pages_at_all_is_told_that_specifically():
+    """Distinct from a spec that genuinely stopped reading. The problems are all
+    present; only the field is missing, so a complaint that says 're-inspect the
+    pages you have not accounted for' asks for work already done and the model
+    resubmits the same thing until the run gives up."""
+    unpaged = Problem(id="1", label="1.", prompt="pick one",
+                      type=ProblemType.multiple_choice, pages=[])
+    issues = _completeness_issues(_spec([unpaged]), n_pages=11)
+
+    assert len(issues) == 1
+    assert "`pages`" in issues[0]
+    assert "of 11 pages carry no problem" not in issues[0]
+
+
+def test_a_spec_that_pages_some_problems_still_reports_the_gap_normally():
+    """Only a wholesale absence of the field gets the new wording; a genuine
+    partial read is still the original complaint."""
+    issues = _completeness_issues(_spec([_mc("1", 1)]), n_pages=11)
+
+    assert len(issues) == 1
+    assert "10 of 11 pages carry no problem" in issues[0]
+
+
+def test_the_unpaged_complaint_does_not_tell_the_model_to_re_read():
+    from autograder.assignment import _incompleteness_complaint
+
+    unpaged = Problem(id="1", label="1.", prompt="q", type=ProblemType.multiple_choice, pages=[])
+    complaint = _incompleteness_complaint(_spec([unpaged]), n_pages=11)
+
+    assert complaint is not None
+    assert "`pages`" in complaint
+    assert "Re-inspect the pages you have not accounted for" not in complaint
