@@ -700,6 +700,7 @@ def test_manifest_uses_atomic_writer_and_records_tool_version(
     assert manifest["config"]["zero_data_retention"] is False
     assert manifest["config"]["allow_data_collection"] is True
     assert manifest["config"]["provider_sort"] == "throughput"
+    assert manifest["provider_sort_history"] == ["throughput"]
     assert manifest["usage"]["cost_usd"] == 0.02
     serialized = writes[0][1]
     assert "secret-never-persisted" not in serialized

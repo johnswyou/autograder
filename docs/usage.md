@@ -491,6 +491,14 @@ sort alongside the providers actually reached and the cost for that command
 invocation, so compare a representative run before adopting a ranking for a
 whole roster.
 
+Because the ranking can change within one directory, `provider_sort_history`
+lists every ranking that directory has run under, with `null` for balanced
+routing. It is the only field in the manifest that accumulates across
+invocations, and it exists so a directory holding stages from more than one
+routing regime does not present itself as the product of the latest one. It
+records which regimes contributed, not which stage came from which; if you need
+that attribution, run each ranking into its own `--out` directory.
+
 ## Manage cost, latency, and concurrency
 
 **Choose model quality and the reasoning setting described above before binding
@@ -518,7 +526,8 @@ and can reduce repeated input-token cost within multi-turn agents. Each agent
 uses a sticky session ID and retains a bounded number of tool
 images and can request an evicted crop again. `run_manifest.json` separates API
 calls, prompt, completion, reasoning, cached-prompt, cache-write, and cost
-fields for the current command invocation only. It also separates the requested
+fields for the current command invocation only; `provider_sort_history` is the
+single field that accumulates across invocations. It also separates the requested
 model from resolved models and providers; it does not combine usage from
 earlier resumptions.
 

@@ -389,6 +389,14 @@ sorted routing identities observed during this invocation. Its run status is
 uses normalized prompt, completion, reasoning, cached-prompt, cache-write, and
 cost fields. The API key, messages, and tool payloads are never included.
 
+`provider_sort_history` is the one field that accumulates across invocations.
+Because a provider sort is not part of run-binding identity, one directory can
+produce stages under different rankings; the field lists the distinct rankings
+it has run under, first seen first, with `null` for balanced routing. It names
+the routing regimes that contributed to a directory, not which artifact came
+from which. A manifest that cannot be read when the next command finishes
+records only that command's ranking and logs a warning.
+
 <!-- manifest-key-contract:start -->
 ```json
 {
@@ -397,6 +405,7 @@ cost fields. The API key, messages, and tool payloads are never included.
     "finished_utc",
     "inputs",
     "issues",
+    "provider_sort_history",
     "providers",
     "python",
     "requested_model",

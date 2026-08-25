@@ -254,6 +254,43 @@ def review_queue_md(
     return len(rows)
 
 
+def _provider_sort_history(path: Path, current: str | None) -> list[str | None]:
+    """Return every provider ranking this directory has run under, first seen first.
+
+    Every other field describes one invocation. This one accumulates, because a
+    provider sort is deliberately not part of the run binding: stages in a
+    single output directory can be produced under different rankings, and a
+    manifest rewritten from scratch each command would show only the last one.
+    A directory that has always used balanced routing records a single ``null``.
+
+    Entries are the distinct rankings seen, not a per-stage attribution. They
+    say which routing regimes contributed to a directory; they do not say which
+    artifact came from which.
+    """
+    recorded: object = []
+    if path.exists():
+        try:
+            recorded = json.loads(path.read_text(encoding="utf-8"))["provider_sort_history"]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            # An unreadable or hand-edited manifest is not worth failing a
+            # finished run over, but silently dropping the record would leave a
+            # directory looking like it only ever used the current ranking.
+            log.warning(
+                "could not read the provider-sort history in %s; recording only this run's",
+                path,
+            )
+            recorded = []
+
+    history: list[str | None] = []
+    if isinstance(recorded, list):
+        for entry in recorded:
+            if (entry is None or isinstance(entry, str)) and entry not in history:
+                history.append(entry)
+    if current not in history:
+        history.append(current)
+    return history
+
+
 def write_manifest(path: Path, cfg: RunConfig, inputs: dict[str, Path | None],
                    submissions: list[tuple[str, list[Path]]],
                    usage: dict, started: datetime,
@@ -273,6 +310,7 @@ def write_manifest(path: Path, cfg: RunConfig, inputs: dict[str, Path | None],
         "requested_model": cfg.model,
         "resolved_models": list(usage.get("resolved_models", [])),
         "providers": list(usage.get("providers", [])),
+        "provider_sort_history": _provider_sort_history(path, cfg.provider_sort),
         "config": {
             "max_workers": cfg.max_workers,
             "reasoning_effort": cfg.reasoning_effort,

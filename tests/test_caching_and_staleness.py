@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from autograder.config import RunConfig
 from autograder.llm import SUBMIT_TOOL_NAME, Usage, UsageMeter, _evict_stale_images, run_agent
 from autograder.models import AssignmentSpec, Rubric, SolutionsManual
+from autograder.report import write_manifest
 from autograder.run_state import RunBindingError, RunState
 from autograder.tools import text_block
 
@@ -408,3 +411,61 @@ def test_identical_inputs_reuse_existing_artifact_without_api_key(
     assert resumed.stage_spec() == small_spec
     assert resumed._client is None
     resumed.assignment.close()
+
+
+def _manifest_after(path: Path, provider_sort: str | None) -> dict:
+    """Finish one invocation into ``path`` and return the manifest it wrote."""
+    write_manifest(
+        path,
+        RunConfig(provider_sort=provider_sort),
+        {},
+        [],
+        {"api_calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
+         "reasoning_tokens": 0, "cached_prompt_tokens": 0, "cache_write_tokens": 0,
+         "cost_usd": 0.0, "resolved_models": [], "providers": []},
+        datetime(2026, 7, 24, tzinfo=timezone.utc),
+        [],
+        "complete",
+    )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_provider_sort_history_accumulates_every_ranking_a_directory_used(tmp_path: Path):
+    path = tmp_path / "run_manifest.json"
+
+    assert _manifest_after(path, None)["provider_sort_history"] == [None]
+    assert _manifest_after(path, "throughput")["provider_sort_history"] == [None, "throughput"]
+
+    # A directory that mixes rankings must not present itself as the product of
+    # the latest one, which is the whole reason the field accumulates.
+    final = _manifest_after(path, "price")
+    assert final["provider_sort_history"] == [None, "throughput", "price"]
+    assert final["config"]["provider_sort"] == "price"
+
+
+def test_provider_sort_history_records_a_repeated_ranking_once(tmp_path: Path):
+    path = tmp_path / "run_manifest.json"
+
+    for _ in range(3):
+        _manifest_after(path, "latency")
+    assert _manifest_after(path, "latency")["provider_sort_history"] == ["latency"]
+
+
+def test_provider_sort_history_survives_a_manifest_without_the_field(tmp_path: Path):
+    path = tmp_path / "run_manifest.json"
+    path.write_text(json.dumps({"tool": "agentic-autograder"}), encoding="utf-8")
+
+    assert _manifest_after(path, "exacto")["provider_sort_history"] == ["exacto"]
+
+
+def test_unreadable_manifest_warns_instead_of_failing_a_finished_run(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    path = tmp_path / "run_manifest.json"
+    path.write_text("{ truncated", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="autograder.report"):
+        manifest = _manifest_after(path, "price")
+
+    assert manifest["provider_sort_history"] == ["price"]
+    assert "could not read the provider-sort history" in caplog.text
