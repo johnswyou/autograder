@@ -118,7 +118,9 @@ def test_problem_points_use_unweighted_mode_when_nothing_is_printed():
     assert _problem_points(spec) == {"1": 1.0, "2": 1.0}
 
 
-def test_problem_points_reject_ambiguous_printed_total():
+def test_problem_points_split_a_printed_assignment_total():
+    """A paper worth 10 with two unpriced questions states the split implicitly.
+    This used to raise; see tests/test_derived_weights.py for the full rules."""
     spec = AssignmentSpec(
         title="Ambiguous",
         total_points=10.0,
@@ -128,8 +130,7 @@ def test_problem_points_reject_ambiguous_printed_total():
         ],
     )
 
-    with pytest.raises(PointAllocationError, match="complete teacher rubric"):
-        _problem_points(spec)
+    assert _problem_points(spec) == {"1": 5.0, "2": 5.0}
 
 
 def test_complete_teacher_rubric_supplies_missing_leaf_weights():

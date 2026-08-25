@@ -227,6 +227,31 @@ def test_multiple_tool_calls_get_individual_tool_messages(cfg: RunConfig):
     ]
 
 
+def test_result_check_rejection_is_fed_back_and_can_be_repaired(cfg: RunConfig):
+    """A schema-valid result the caller still refuses re-enters the repair loop."""
+    task = _task(result_check=lambda r: None if r.score >= 1 else "score must reach 1")
+    client = make_stub_client(
+        [
+            turn(tool_use(SUBMIT_TOOL_NAME, {"answer": "ok", "score": 0}, id="low")),
+            turn(tool_use(SUBMIT_TOOL_NAME, {"answer": "ok", "score": 1}, id="high")),
+        ]
+    )
+    assert run_agent(client, cfg, task, None).score == 1
+    complaint = client.calls[1].messages[-1]
+    assert complaint["role"] == "tool"
+    assert complaint["tool_call_id"] == "low"
+    assert complaint["content"] == "ERROR: score must reach 1"
+
+
+def test_result_check_gives_up_after_repeated_rejections(cfg: RunConfig):
+    task = _task(result_check=lambda r: "never good enough")
+    rejected = turn(tool_use(SUBMIT_TOOL_NAME, {"answer": "ok", "score": 0}))
+    client = make_stub_client([rejected, rejected, rejected])
+    with pytest.raises(AgentError, match="never good enough"):
+        run_agent(client, cfg, task, None)
+    assert len(client.calls) == 3
+
+
 def test_two_nudges_then_error(cfg: RunConfig):
     client = make_stub_client([text("one"), text("two"), text("three")])
     with pytest.raises(AgentError, match=r"ended 3 turns.*finish_reason=stop"):

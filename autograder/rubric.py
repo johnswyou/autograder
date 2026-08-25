@@ -13,19 +13,22 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from pathlib import Path
 
 from .assignment import spec_digest
 from .config import RunConfig, short
 from .ingest import Document
 from .llm import AgentTask, UsageMeter, run_agent
-from .models import AssignmentSpec, Criterion, Issue, ParsedRubric, Rubric, RubricProblem, SolutionsManual
+from .models import AssignmentSpec, Criterion, Issue, ParsedRubric, Problem, Rubric, RubricProblem, SolutionsManual
 from .report import markdown_text
 from .tools import Block, ToolKit, inline_pages, text_block
 
 log = logging.getLogger("autograder")
 
 _POINT_TOL = 1e-6
+# Stands in for the assignment itself as the outermost printed total.
+_ROOT_KEY = "\x00assignment"
 
 
 class PointAllocationError(ValueError):
@@ -109,37 +112,103 @@ def _problem_points(spec: AssignmentSpec,
     if spec.total_points is None and all(node.points is None for node in spec.walk()):
         return {leaf.id: 1.0 for leaf in leaves}
 
-    missing = [pid for pid, entries in by_id.items() if not entries]
-    if missing:
-        raise PointAllocationError(
-            f"ambiguous point allocation for assignment '{spec.title}'; provide a complete "
-            "teacher rubric with exactly one entry per leaf and explicit leaf weights "
-            f"(missing: {', '.join(sorted(missing))})"
-        )
-
+    # Authority runs printed value, then supplied rubric entry, then derivation.
     points: dict[str, float] = {}
     for leaf in leaves:
-        supplied = float(by_id[leaf.id][0].points)
-        if leaf.points is not None and abs(supplied - leaf.points) > _POINT_TOL:
-            raise PointAllocationError(
-                f"provided rubric weight for leaf '{leaf.id}' is {supplied:g} points, "
-                f"but its explicit leaf weight is {leaf.points:g}; provide explicit leaf "
-                "weights that agree with the printed value"
-            )
-        points[leaf.id] = float(leaf.points) if leaf.points is not None else supplied
+        entries = by_id[leaf.id]
+        if leaf.points is not None:
+            if entries and abs(float(entries[0].points) - leaf.points) > _POINT_TOL:
+                raise PointAllocationError(
+                    f"provided rubric weight for leaf '{leaf.id}' is {entries[0].points:g} points, "
+                    f"but its explicit leaf weight is {leaf.points:g}; provide explicit leaf "
+                    "weights that agree with the printed value"
+                )
+            points[leaf.id] = float(leaf.points)
+        elif entries:
+            points[leaf.id] = float(entries[0].points)
 
-    _validate_point_totals(spec, points)
+    defaulted = _derive_missing_weights(spec, leaves, points)
+    _validate_point_totals(spec, points, defaulted)
     return points
 
 
-def _validate_point_totals(spec: AssignmentSpec, points: dict[str, float]) -> None:
-    """Check resolved leaf weights against every printed aggregate total."""
+def _ancestor_chains(spec: AssignmentSpec) -> dict[str, list[Problem]]:
+    """Map every node id to its ancestors, nearest first."""
+    chains: dict[str, list[Problem]] = {}
+
+    def walk(node: Problem, ancestors: list[Problem]) -> None:
+        chains[node.id] = ancestors
+        for child in node.children:
+            walk(child, [node, *ancestors])
+
+    for problem in spec.problems:
+        walk(problem, [])
+    return chains
+
+
+def _derive_missing_weights(spec: AssignmentSpec, leaves: list[Problem],
+                            points: dict[str, float]) -> set[str]:
+    """Fill each unweighted leaf from the nearest printed parent total.
+
+    An exam prints "15 points" beside question 22 and nothing beside 22a-22e,
+    so the only honest reading of the paper is that the parts share the 15.
+    ``spec.total_points`` is the same statement about the whole assignment, so
+    it acts as the outermost parent.
+
+    Leaves the enclosing total cannot pay for — because it is absent, or
+    already spent by its printed siblings, as when a printed total covers one
+    section of a paper and says nothing about another — fall back to a flat
+    1.0. Their ids come back so the caller can skip the printed-total checks
+    they have, by construction, just broken.
+    """
+    chains = _ancestor_chains(spec)
+    groups: dict[str, list[Problem]] = {}
+    governors: dict[str, Problem | None] = {}
+    for leaf in leaves:
+        if leaf.id in points:
+            continue
+        priced = next((node for node in chains[leaf.id] if node.points is not None), None)
+        key = priced.id if priced is not None else _ROOT_KEY
+        groups.setdefault(key, []).append(leaf)
+        governors[key] = priced
+
+    def depth(key: str) -> int:
+        return -1 if key == _ROOT_KEY else len(chains[key])
+
+    defaulted: set[str] = set()
+    # Deepest first: an inner total must be spent before an outer one counts it.
+    for key in sorted(groups, key=depth, reverse=True):
+        members = groups[key]
+        parent = governors[key]
+        total = spec.total_points if parent is None else parent.points
+        scope = leaves if parent is None else [n for n in parent.walk() if n.is_leaf]
+        share: float | None = None
+        if total is not None:
+            remainder = float(total) - sum(points[n.id] for n in scope if n.id in points)
+            if remainder > _POINT_TOL:
+                share = remainder / len(members)
+        for leaf in members:
+            points[leaf.id] = 1.0 if share is None else share
+            if share is None:
+                defaulted.add(leaf.id)
+    return defaulted
+
+
+def _validate_point_totals(spec: AssignmentSpec, points: dict[str, float],
+                           defaulted: set[str] | frozenset[str] = frozenset()) -> None:
+    """Check resolved leaf weights against every printed aggregate total.
+
+    A printed total is only evidence about the leaves it actually covers, so
+    any total enclosing a leaf that fell back to the flat default is skipped:
+    that leaf is outside the accounting the number describes.
+    """
 
     def subtree_total(node) -> float:
         if node.is_leaf:
             return points[node.id]
         total = sum(subtree_total(child) for child in node.children)
-        if node.points is not None and abs(total - node.points) > _POINT_TOL:
+        covers_default = any(n.id in defaulted for n in node.walk())
+        if node.points is not None and not covers_default and abs(total - node.points) > _POINT_TOL:
             raise PointAllocationError(
                 f"printed parent total for '{node.id}' is {node.points:g} points, but "
                 f"explicit leaf weights sum to {total:g}; provide explicit leaf weights "
@@ -148,11 +217,35 @@ def _validate_point_totals(spec: AssignmentSpec, points: dict[str, float]) -> No
         return total
 
     total = sum(subtree_total(problem) for problem in spec.problems)
-    if spec.total_points is not None and abs(total - spec.total_points) > _POINT_TOL:
+    if spec.total_points is not None and not defaulted and abs(total - spec.total_points) > _POINT_TOL:
         raise PointAllocationError(
             f"printed assignment total for '{spec.title}' is {spec.total_points:g} points, "
             f"but explicit leaf weights sum to {total:g}; provide explicit leaf weights "
             "that agree with the assignment total"
+        )
+
+
+def check_point_allocation(spec: AssignmentSpec) -> None:
+    """Raise if this spec's leaf weights cannot be resolved without a rubric.
+
+    Callers use this to ask the question early. Generating solutions cannot
+    change the answer, so a run that would fail at the rubric stage for want of
+    a point allocation may as well fail before spending on them.
+
+    Any weight that had to be derived rather than read off the paper is an
+    inference, so it is announced here — before anything expensive depends
+    on it — rather than left for a reader to reconstruct from the report.
+    """
+    points = _problem_points(spec)
+    printed = {leaf.id for leaf in spec.leaves() if leaf.points is not None}
+    derived = [weight for pid, weight in points.items() if pid not in printed]
+    if derived:
+        tally = sorted(Counter(derived).items())
+        log.info(
+            "derived weights for %d unpriced leaf/leaves (%s); assignment totals %g points",
+            len(derived),
+            ", ".join(f"{count} at {weight:g}" for weight, count in tally),
+            sum(points.values()),
         )
 
 
