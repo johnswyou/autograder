@@ -36,7 +36,14 @@ from .models import (
 )
 from .ocr import transcribe_all
 from .report import review_queue_md, save_json, save_text, student_report_md, summary_csv, write_manifest
-from .rubric import complete_rubric, generate_rubric, parse_provided_rubric, revalidate_cached_rubric, rubric_markdown
+from .rubric import (
+    check_point_allocation,
+    complete_rubric,
+    generate_rubric,
+    parse_provided_rubric,
+    revalidate_cached_rubric,
+    rubric_markdown,
+)
 from .run_state import RunState, ensure_disjoint_output
 from .solutions import (
     dependent_closure,
@@ -184,6 +191,18 @@ class Pipeline:
             spec = build_spec(self.client, self.cfg, self.assignment, self.meter)
             save_json(path, spec)
         return spec
+
+    def preflight_points(self, spec: AssignmentSpec, rubric_path: Path | None) -> None:
+        """Resolve leaf weights before anything expensive depends on them.
+
+        Skipped when a teacher rubric was supplied: it may carry the very
+        weights this spec is missing, and it is not parsed until stage_rubric.
+        Runs against a cached spec too, so a re-run into the same directory
+        fails immediately rather than regenerating every solution first.
+        """
+        if rubric_path is not None:
+            return
+        check_point_allocation(spec)
 
     def stage_solutions(self, spec: AssignmentSpec,
                         solutions_path: Path | None) -> SolutionsManual:
@@ -425,6 +444,7 @@ class Pipeline:
             "rubric_prompt", _text_digest(steer) if steer is not None else "none"
         )
         spec = self.stage_spec()
+        self.preflight_points(spec, rubric_path)
         manual = self.stage_solutions(spec, solutions_path)
         rubric = self.stage_rubric(spec, manual, rubric_path, steer)
         self._finish(inputs={"assignment": self.assignment_path,
@@ -465,6 +485,7 @@ class Pipeline:
                  ", ".join(sid for sid, _ in submissions))
 
         spec = self.stage_spec()
+        self.preflight_points(spec, rubric_path)
         manual = self.stage_solutions(spec, solutions_path)
         rubric = self.stage_rubric(spec, manual, rubric_path, steer)
 

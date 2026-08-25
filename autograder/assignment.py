@@ -15,11 +15,23 @@ import re
 
 from .config import RunConfig
 from .ingest import Document
-from .llm import AgentTask, UsageMeter, run_agent
+from .llm import SUBMIT_TOOL_NAME, AgentTask, UsageMeter, run_agent
 from .models import AssignmentSpec, ProblemType
 from .tools import ToolKit, inline_pages, text_block
 
 log = logging.getLogger("autograder")
+
+# A model that stops reading partway through a document submits a spec that is
+# structurally valid and silently wrong; nothing downstream can distinguish it
+# from a genuine one-problem worksheet. Two signals can. Both are deliberately
+# blunt: a false positive costs one extra agent turn, so they fire only on gaps
+# no plausible assignment explains.
+#
+# Pages carrying no problem are normal in small numbers (cover sheet, formula
+# sheet, blank work space), so only a wholesale gap counts.
+MAX_UNCOVERED_PAGE_FRACTION = 1 / 3
+MIN_UNCOVERED_PAGES = 2
+_POINT_TOL = 1e-6
 
 SPEC_SYSTEM = """You are an expert analyst of math and physics assignments (homeworks, problem \
 sets, exams, quizzes). Your job is to produce a COMPLETE structural inventory of a blank \
@@ -92,6 +104,51 @@ def _prune_unknown_deps(spec: AssignmentSpec) -> None:
             p.depends_on = [d for d in p.depends_on if d in known and d != p.id]
 
 
+def _completeness_issues(spec: AssignmentSpec, n_pages: int, *,
+                         check_pages: bool = True) -> list[str]:
+    """Reasons to believe the model stopped short of the whole document.
+
+    Empty means the spec is plausible, not that it is correct — these checks
+    catch abandonment, not subtle omissions.
+
+    ``check_pages=False`` for text sources: a markdown/LaTeX file is split on
+    paragraph boundaries at a fixed character budget, so its "pages" are chunk
+    indices rather than printed pages, and a chunk holding only preamble says
+    nothing about whether the model read on.
+    """
+    issues: list[str] = []
+
+    covered = {page for node in spec.walk() for page in node.pages if 1 <= page <= n_pages}
+    uncovered = [page for page in range(1, n_pages + 1) if page not in covered]
+    if (check_pages and len(uncovered) >= MIN_UNCOVERED_PAGES
+            and len(uncovered) > n_pages * MAX_UNCOVERED_PAGE_FRACTION):
+        shown = ", ".join(str(page) for page in uncovered[:10])
+        if len(uncovered) > 10:
+            shown += ", …"
+        issues.append(
+            f"{len(uncovered)} of {n_pages} pages carry no problem (pages {shown}); every page "
+            "of the document must be accounted for"
+        )
+
+    leaves = spec.leaves()
+    printed = [leaf.points for leaf in leaves if leaf.points is not None]
+    if spec.total_points is not None and printed:
+        total = float(spec.total_points)
+        supplied = float(sum(printed))
+        if len(printed) == len(leaves) and abs(supplied - total) > _POINT_TOL:
+            issues.append(
+                f"every leaf carries a printed point value and they sum to {supplied:g}, but the "
+                f"printed assignment total is {total:g}"
+            )
+        elif supplied > total + _POINT_TOL:
+            issues.append(
+                f"printed leaf points already sum to {supplied:g}, more than the printed "
+                f"assignment total of {total:g}"
+            )
+
+    return issues
+
+
 def build_spec(client, cfg: RunConfig, assignment: Document, meter: UsageMeter | None = None) -> AssignmentSpec:
     toolkit = ToolKit({"assignment": assignment}, cfg)
     intro = (
@@ -109,6 +166,9 @@ def build_spec(client, cfg: RunConfig, assignment: Document, meter: UsageMeter |
         toolkit=toolkit,
         max_tokens=cfg.big_max_tokens,
         max_turns=cfg.max_agent_turns,
+        result_check=lambda candidate: _incompleteness_complaint(
+            candidate, assignment.n_pages, check_pages=assignment.is_visual
+        ),
     )
     spec: AssignmentSpec = run_agent(client, cfg, task, meter)
 
@@ -131,6 +191,17 @@ def build_spec(client, cfg: RunConfig, assignment: Document, meter: UsageMeter |
         len(spec.problems), len(leaves), spec.total_points if spec.total_points is not None else "not printed",
     )
     return spec
+
+
+def _incompleteness_complaint(spec: AssignmentSpec, n_pages: int, *,
+                              check_pages: bool = True) -> str | None:
+    issues = _completeness_issues(spec, n_pages, check_pages=check_pages)
+    if not issues:
+        return None
+    return (
+        "that spec looks incomplete: " + "; ".join(issues) + ". Re-inspect the pages you have "
+        f"not accounted for and call {SUBMIT_TOOL_NAME} again with EVERY problem in the document."
+    )
 
 
 def spec_digest(spec: AssignmentSpec, with_prompts: bool = False, snippet: int = 180,

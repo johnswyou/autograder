@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Generic, Protocol, TypeVar
 
@@ -19,6 +20,9 @@ log = logging.getLogger("autograder")
 M = TypeVar("M", bound=BaseModel)
 
 SUBMIT_TOOL_NAME = "submit_result"
+# Re-asking costs a full turn at the task's max_tokens, and a check the model
+# cannot satisfy would otherwise consume the whole max_turns budget.
+MAX_RESULT_REJECTIONS = 2
 NUDGE = (
     "You have not submitted a result. When you are finished, you MUST call the "
     f"{SUBMIT_TOOL_NAME} tool exactly once with your final structured output. "
@@ -140,6 +144,13 @@ class AgentTask(Generic[M]):
     max_tokens: int = 8192
     max_turns: int = 48
     context: str = ""
+    result_check: Callable[[M], str | None] | None = None
+    """Optional caller check run on a schema-valid submission.
+
+    Returns ``None`` to accept, or a complaint the model is asked to fix. A
+    schema cannot express 'you inspected one page of eleven', so this is the
+    seam where a stage rejects a well-formed but unusable result.
+    """
 
 
 def _is_present(value: Any) -> bool:
@@ -442,6 +453,7 @@ def run_agent(
     session_id = str(uuid.uuid4())
     tag = f"[{task.name}{' ' + task.context if task.context else ''}]"
     nudges = 0
+    rejections = 0
 
     for turn_number in range(1, task.max_turns + 1):
         _evict_stale_images(messages, cfg.max_tool_images)
@@ -501,8 +513,7 @@ def run_agent(
 
             if call.name == SUBMIT_TOOL_NAME:
                 try:
-                    finished = task.result_model.model_validate(arguments)
-                    messages.append({"role": "tool", "tool_call_id": call.id, "content": "accepted"})
+                    candidate = task.result_model.model_validate(arguments)
                 except ValidationError as exc:
                     messages.append(
                         _tool_error(
@@ -511,6 +522,19 @@ def run_agent(
                             f"{SUBMIT_TOOL_NAME} again:\n{str(exc)[:2500]}",
                         )
                     )
+                    continue
+                complaint = task.result_check(candidate) if task.result_check is not None else None
+                if complaint is not None:
+                    rejections += 1
+                    if rejections > MAX_RESULT_REJECTIONS:
+                        raise AgentError(
+                            f"{tag} submitted an unusable result {rejections} times; last "
+                            f"complaint: {complaint}"
+                        )
+                    messages.append(_tool_error(call.id, complaint))
+                    continue
+                finished = candidate
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": "accepted"})
                 continue
 
             if task.toolkit is None:
