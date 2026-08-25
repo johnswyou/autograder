@@ -127,8 +127,17 @@ def _problem_points(spec: AssignmentSpec,
         elif entries:
             points[leaf.id] = float(entries[0].points)
 
-    defaulted = _derive_missing_weights(spec, leaves, points)
-    _validate_point_totals(spec, points, defaulted)
+    # Which leaves a printed total can pay for is a fact about the paper, not
+    # about who supplied their weights, so it is read off the printed values
+    # alone. Deciding it from whatever happened to be missing at call time made
+    # the check depend on the caller: the rubric stage re-resolves the
+    # allocation against the rubric it just generated, and every derived weight
+    # arrives back as a supplied entry, so nothing derived, nothing was marked
+    # defaulted, and the totals suppressed on the first pass were enforced on
+    # the second against the very numbers the first pass had produced.
+    unpayable = _derive_missing_weights(spec, leaves, dict(printed))
+    _derive_missing_weights(spec, leaves, points)
+    _validate_point_totals(spec, points, unpayable)
     return points
 
 

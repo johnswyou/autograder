@@ -126,3 +126,58 @@ def test_a_supplied_rubric_that_contradicts_a_printed_leaf_is_still_an_error():
     ])
     with pytest.raises(PointAllocationError, match="explicit leaf weight"):
         _problem_points(spec, rubric)
+
+
+# -- the derivation must survive being handed back ---------------------------
+
+
+def _ap_shaped_spec() -> AssignmentSpec:
+    """20 unpriced multiple-choice questions plus a printed 45-point Section II."""
+    return _spec(
+        [
+            *(_leaf(str(i)) for i in range(1, 21)),
+            _container("21", 10.0, [_leaf(f"21{c}") for c in "abcd"]),
+            _container("22", 15.0, [_leaf(f"22{c}") for c in "abcde"]),
+            _container("23", 15.0, [_leaf(f"23{c}") for c in "abcde"]),
+            _leaf("24", 5.0),
+        ],
+        total=45.0,
+    )
+
+
+def _rubric_of(points: dict[str, float]) -> Rubric:
+    return Rubric(title="Exam", problems=[
+        RubricProblem(problem_id=pid, points=weight, criteria=[])
+        for pid, weight in points.items()
+    ])
+
+
+def test_a_rubric_carrying_the_derived_weights_back_resolves_identically():
+    """``complete_rubric`` re-resolves the allocation against the rubric it has
+    just generated from it. The weights are the ones ``_problem_points`` chose a
+    moment earlier, so the second pass must reach the same verdict as the first
+    rather than reject them against a printed total that never covered them."""
+    spec = _ap_shaped_spec()
+    derived = _problem_points(spec)
+
+    assert _problem_points(spec, _rubric_of(derived)) == derived
+
+
+def test_an_enclosing_total_that_cannot_pay_stays_unenforced_for_any_supplier():
+    """Which leaves the paper's numbers cover is a fact about the paper. A
+    weight the printed 45 could not have produced is no more checkable against
+    it because a rubric supplied it instead of the derivation."""
+    spec = _ap_shaped_spec()
+    weights = {**_problem_points(spec), "1": 2.0}
+
+    assert _problem_points(spec, _rubric_of(weights))["1"] == 2.0
+
+
+def test_a_rubric_that_overspends_a_payable_printed_parent_is_still_an_error():
+    """Loosening the unpayable case must not loosen the case the paper does
+    cover: 21 prints 10 and its four parts are entirely inside that number."""
+    spec = _ap_shaped_spec()
+    weights = {**_problem_points(spec), "21a": 4.0}
+
+    with pytest.raises(PointAllocationError, match="printed parent total for '21'"):
+        _problem_points(spec, _rubric_of(weights))
