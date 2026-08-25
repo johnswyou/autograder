@@ -472,3 +472,59 @@ def test_transcriber_crop_honors_region_rotate(tmp_path: Path, cfg):
     got = _center_quadrant(base64.b64decode(encoded))
     doc.close()
     assert got == "BL", f"crop used the wrong frame (got {got}, want BL)"
+
+
+# -- tool schemas must survive every provider's schema dialect ---------------
+
+
+def _enums_in(node, path: str) -> list[tuple[str, object, list]]:
+    """Every ``enum`` in a schema, with the ``type`` it constrains."""
+    found: list[tuple[str, object, list]] = []
+    if isinstance(node, dict):
+        if isinstance(node.get("enum"), list):
+            found.append((path, node.get("type"), node["enum"]))
+        for key, value in node.items():
+            found += _enums_in(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found += _enums_in(value, f"{path}[{index}]")
+    return found
+
+
+def test_no_tool_schema_constrains_a_non_string_type_with_an_enum(tiny_pdf: Path, cfg):
+    """Google's schema dialect declares ``enum`` as a list of strings usable only
+    with a string type. An integer enum is not merely ignored there: the whole
+    ``properties`` map is discarded, and every name in ``required`` then refers
+    to nothing, so Gemini rejects the request with
+
+        parameters.required[0]: property is not defined
+
+    naming a property that was never the problem. The constraint belongs in the
+    dispatcher, which already enforces it, not in a schema keyword one major
+    provider cannot represent.
+    """
+    toolkit = ToolKit({"assignment": Document.from_path(tiny_pdf, "assignment")}, cfg)
+    offenders = [
+        (spec["function"]["name"], path, kind, values)
+        for spec in toolkit.specs(("view_page", "zoom", "read_text", "compute"))
+        for path, kind, values in _enums_in(spec["function"]["parameters"], "parameters")
+        if kind != "string" or any(not isinstance(v, str) for v in values)
+    ]
+    assert offenders == []
+
+
+def test_every_required_tool_property_is_actually_declared(tiny_pdf: Path, cfg):
+    """The invariant Gemini reported as broken, checked directly."""
+    toolkit = ToolKit({"assignment": Document.from_path(tiny_pdf, "assignment")}, cfg)
+    for spec in toolkit.specs(("view_page", "zoom", "read_text", "compute")):
+        parameters = spec["function"]["parameters"]
+        assert set(parameters.get("required", [])) <= set(parameters["properties"])
+
+
+def test_the_dispatcher_still_rejects_a_rotation_the_schema_no_longer_enumerates(
+    tiny_pdf: Path, cfg
+):
+    toolkit = ToolKit({"assignment": Document.from_path(tiny_pdf, "assignment")}, cfg)
+    blocks, is_error = toolkit.dispatch("view_page", {"doc": "assignment", "page": 1, "rotate": 45})
+    assert is_error
+    assert "rotate" in blocks[0]["text"]
