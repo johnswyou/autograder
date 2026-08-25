@@ -9,6 +9,10 @@ on:
 # not change how an unrelated pull request resolves. Jobs that install from
 # uv.lock pass `--locked`, which fails rather than silently re-resolving when
 # the lockfile has drifted from pyproject.toml.
+#
+# setup-uv is referenced by exact release tag. It publishes floating major
+# aliases only through v7, so `@v10` does not resolve; raise the tag and
+# UV_VERSION together.
 env:
   UV_VERSION: "0.11.28"
 
@@ -21,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.10"
@@ -41,7 +45,7 @@ jobs:
         python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
@@ -65,7 +69,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
       - name: Install the lowest permitted version of each dependency
