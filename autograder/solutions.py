@@ -382,6 +382,21 @@ def dependent_closure(spec: AssignmentSpec, seeds: set[str]) -> set[str]:
         closure.update(additions)
 
 
+def manual_content_fingerprint(manual: SolutionsManual) -> str:
+    """Digest of everything a later stage reads from a manual.
+
+    Verifier notes and round counts are left out: a placeholder that is retried
+    and fails again carries new error text, but nothing the rubric or any grade
+    was built from has changed, and counting it as a change would discard every
+    grade in the run.
+    """
+    return json.dumps(
+        {pid: sol.model_dump(mode="json", exclude={"verifier_notes", "rounds"})
+         for pid, sol in sorted(manual.solutions.items())},
+        sort_keys=True,
+    )
+
+
 def _propagate_dependency_trust(spec: AssignmentSpec, manual: SolutionsManual) -> None:
     """Mark every dependent entry unverified when a prerequisite is unverified."""
     leaves = {leaf.id: leaf for leaf in spec.leaves()}

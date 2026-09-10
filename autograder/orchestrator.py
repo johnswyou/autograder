@@ -48,6 +48,7 @@ from .run_state import RunState, ensure_disjoint_output
 from .solutions import (
     dependent_closure,
     generate_manual,
+    manual_content_fingerprint,
     parse_provided_solutions,
     solutions_markdown,
     validate_and_complete_solutions,
@@ -110,17 +111,24 @@ class Pipeline:
         self.cfg = cfg
         self.assignment_path = Path(assignment_path)
         ensure_disjoint_output(Path(out_dir), [self.assignment_path])
-        self.run_state = RunState.open(
-            Path(out_dir),
-            sha256_path(self.assignment_path),
-            self.cfg.cache_identity(),
-        )
-        self.out = self.run_state.output
+        # The assignment is opened before the output directory is bound to it:
+        # a binding written for a file that then fails to ingest would reject
+        # the corrected file on the retry as "a different assignment".
         self.assignment = Document.from_path(
             self.assignment_path,
             "assignment",
             max_source_pixels=self.cfg.max_source_pixels,
         )
+        try:
+            self.run_state = RunState.open(
+                Path(out_dir),
+                sha256_path(self.assignment_path),
+                self.cfg.cache_identity(),
+            )
+        except BaseException:
+            self.assignment.close()
+            raise
+        self.out = self.run_state.output
         self.meter = UsageMeter()
         self.issues: list[Issue] = []
         self.started = datetime.now(timezone.utc)
@@ -222,13 +230,15 @@ class Pipeline:
                 log.info("retrying %d failed solution agent(s) from a previous run: %s",
                          len(failed), ", ".join(failed))
                 before = manual.model_dump_json()
+                content_before = manual_content_fingerprint(manual)
                 affected = dependent_closure(spec, set(failed))
                 regen = generate_manual(self.client, self.cfg, spec, self.assignment,
                                         only_ids=affected, known=dict(manual.solutions),
                                         meter=self.meter)
                 manual.solutions.update(regen.solutions)
-                if manual.model_dump_json() != before:
+                if manual_content_fingerprint(manual) != content_before:
                     self._invalidate_solution_dependents()
+                if manual.model_dump_json() != before:
                     save_json(path, manual)
         if manual is None:
             if solutions_path is not None:
@@ -352,9 +362,11 @@ class Pipeline:
             gpath = sdir / "grades.json"
             grade = self._load_or(gpath, StudentGrade)
             if grade is not None:
+                loaded = grade.model_dump_json()
                 # The review thresholds are not part of the run binding, so a
                 # saved grade may have been written under different ones. Its
-                # scores stand; only the review flag is re-derived.
+                # scores stand; only the review flag is re-derived, and the file
+                # is rewritten so it agrees with the report built from it.
                 for problem_grade in grade.problems.values():
                     apply_review_thresholds(problem_grade, self.cfg)
                 failed = sorted(pid for pid, pg in grade.problems.items()
@@ -371,6 +383,7 @@ class Pipeline:
                     merged = dict(grade.problems)
                     merged.update(partial.problems)
                     grade = aggregate_student_grade(student_id, mapping, transcripts, merged)
+                if grade.model_dump_json() != loaded:
                     save_json(gpath, grade)
             if grade is None:
                 log.info("grading %s (parallel per problem)", student_id)

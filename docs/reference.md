@@ -530,7 +530,8 @@ transcripts remain reusable.
 Everything that binds the run appears as `yes` in the configuration tables
 below. Worker count, API key, review thresholds, force, and
 verbosity do not bind content. Threshold changes rederive review flags and
-rewrite reports and class files without another grading call. `--force` skips
+rewrite the saved grades, reports, and class files without another grading
+call. `--force` skips
 artifact reuse but is still subject to all binding checks.
 
 ## Process exit status

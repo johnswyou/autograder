@@ -622,6 +622,54 @@ def test_stage_student_retries_structured_transcript_and_grade_failures(
     assert grade.total_awarded == 6.0
 
 
+def test_stage_student_rewrites_grades_json_when_thresholds_reflag(
+    tmp_path: Path, small_spec, tiny_pdf,
+):
+    """report.md and the class files are written from the re-derived flags, so
+    the grades.json beside them must say the same thing."""
+    from autograder.models import StudentTranscripts
+    from autograder.orchestrator import Pipeline
+    from autograder.report import save_json
+
+    out = tmp_path / "run"
+    pipe = Pipeline(RunConfig(api_key=None, max_workers=1, review_confidence=0.99), tiny_pdf, out)
+    student_dir = out / "students" / "alice"
+    transcripts = {
+        "1a": Transcript(problem_id="1a", text="t = 3.03", confidence=0.9),
+        "1b": Transcript(problem_id="1b", text="v = 29.7", confidence=0.9),
+        "2": Transcript(problem_id="2"),
+    }
+    graded_under_lenient_threshold = StudentGrade(
+        student_id="alice", total_awarded=6.0, total_possible=10.0,
+        processed_awarded=6.0, processed_possible=10.0, problems={
+            "1a": {"problem_id": "1a", "status": WorkStatus.answered, "awarded": 3.0,
+                   "possible": 3.0, "confidence": 0.9, "ocr_confidence": 0.9},
+            "1b": {"problem_id": "1b", "status": WorkStatus.answered, "awarded": 3.0,
+                   "possible": 3.0, "confidence": 0.9, "ocr_confidence": 0.9},
+            "2": {"problem_id": "2", "status": WorkStatus.blank, "awarded": 0.0,
+                  "possible": 4.0, "confidence": 1.0},
+        })
+    save_json(student_dir / "mapping.json", _mapping_two_answered())
+    save_json(student_dir / "transcripts.json", StudentTranscripts(transcripts=transcripts))
+    save_json(student_dir / "grades.json", graded_under_lenient_threshold)
+    rubric = Rubric(problems=[
+        RubricProblem(problem_id=pid, points=pts, criteria=[
+            Criterion(id=f"{pid}.c1", description="all", points=pts)])
+        for pid, pts in (("1a", 3.0), ("1b", 3.0), ("2", 4.0))
+    ])
+    manual = SolutionsManual(solutions={
+        pid: Solution(problem_id=pid, final_answer="42", verified=True) for pid in ("1a", "1b", "2")
+    })
+
+    grade = pipe.stage_student(small_spec, rubric, manual, "alice", [tiny_pdf])
+    pipe.assignment.close()
+
+    assert grade.problems["1a"].needs_review
+    on_disk = StudentGrade.model_validate_json((student_dir / "grades.json").read_text())
+    assert on_disk.problems["1a"].needs_review
+    assert "grader confidence 0.90 < 0.99" in (on_disk.problems["1a"].review_reason or "")
+
+
 # -- orchestrator: retry-on-resume ----------------------------------------------
 
 
@@ -718,6 +766,39 @@ def test_solution_repair_invalidates_derived_artifacts_before_publish(
 
     assert all(not artifact.exists() for artifact in derived)
     assert all(artifact.exists() for artifact in retained)
+
+
+def test_a_retry_that_fails_again_keeps_derived_artifacts(tmp_path: Path, small_spec, tiny_pdf):
+    """A placeholder replaced by another placeholder changed nothing the rubric
+    or any grade was built from. The new error text is recorded, but treating
+    it as a changed manual would discard every grade in the run."""
+    from autograder.orchestrator import Pipeline
+    from autograder.report import save_json
+
+    out = tmp_path / "run"
+    pipe = Pipeline(RunConfig(api_key="test-key", max_workers=1), tiny_pdf, out)
+    cached = SolutionsManual(assignment_title="Quiz", solutions={
+        "1a": Solution(problem_id="1a", final_answer="a", verified=True),
+        "1b": Solution(problem_id="1b", final_answer="b", verified=True),
+        "2": Solution(problem_id="2", verified=False,
+                      verifier_notes=f"{AGENT_FAILURE} solver agent failed: HTTP 429 (request abc)"),
+    })
+    save_json(out / "solutions_manual.json", cached)
+    derived = [out / "rubric.json", out / "students" / "alice" / "grades.json"]
+    for artifact in derived:
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("cached", encoding="utf-8")
+
+    pipe._client = make_stub_client([RuntimeError("HTTP 503 (request xyz)")])  # 2 fails again
+    try:
+        manual = pipe.stage_solutions(small_spec, None)
+    finally:
+        pipe.assignment.close()
+
+    assert manual.solutions["2"].verifier_notes.startswith(AGENT_FAILURE)
+    assert all(artifact.exists() for artifact in derived)
+    on_disk = SolutionsManual.model_validate_json((out / "solutions_manual.json").read_text())
+    assert "HTTP 503" in (on_disk.solutions["2"].verifier_notes or "")
 
 
 def test_stage_solutions_retries_marked_failures(tmp_path: Path, small_spec, tiny_pdf):

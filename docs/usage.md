@@ -320,7 +320,7 @@ student's ordered files as that student is encountered.
 |---|---|---|
 | Continue from `inspect` to `solve`, `rubric`, or `grade` with the same choices | Yes | Earlier compatible stages are reused and later input bindings are added. |
 | Repeat an identical command after interruption or partial failure | Yes | Completed work is reused and eligible failures are retried. |
-| Change only review-confidence thresholds | Yes | Scores are reused; review flags, reports, summary, and queue are recalculated from the new thresholds without a model call. Intrinsic review reasons remain. |
+| Change only review-confidence thresholds | Yes | Scores are reused; review flags, saved grades, reports, summary, and queue are recalculated from the new thresholds without a model call. Intrinsic review reasons remain. |
 | Change worker count, prompt-caching choice, API key source, verbosity, or merely add/remove `--force` | Yes | These choices do not redefine saved content, although `--force` controls whether it is reused on that invocation. |
 | Change the assignment, any recorded submission file or its order/name, the answer key, rubric, or rubric prompt | No | Use a new directory; a binding mismatch stops the command. |
 | Change model, thinking, effort, token limit, solution retry policy, strict-solutions, strict-rubric, or supplied-solution verification policy | No | These affect generated content or trust and require a new directory. |

@@ -1441,6 +1441,23 @@ def test_normalize_rubric_renames_duplicate_criterion_ids():
     assert ids[0] == "1a.c1"                       # first keeps its id
 
 
+def test_normalize_rubric_keeps_one_entry_per_problem():
+    """A model that lists a problem twice must not abort the run with an error
+    telling the teacher to fix a rubric they never supplied."""
+    r = Rubric(problems=[
+        RubricProblem(problem_id="1a", points=3.0, criteria=[
+            Criterion(id="1a.c1", description="x", points=3.0)]),
+        RubricProblem(problem_id="1a", points=3.0, criteria=[
+            Criterion(id="1a.c2", description="y", points=3.0)]),
+        RubricProblem(problem_id="1b", points=3.0, criteria=[
+            Criterion(id="1b.c1", description="z", points=3.0)]),
+    ])
+    _normalize_rubric(r, {"1a": 3.0, "1b": 3.0}, {"1a", "1b"})
+    assert [rp.problem_id for rp in r.problems] == ["1a", "1b"]
+    assert [c.id for c in r.problems[0].criteria] == ["1a.c1"]     # the first entry is kept
+    assert r.total_points == 6.0
+
+
 def test_cli_max_tokens_applies_to_all_agent_budgets():
     p = build_parser()
     args = p.parse_args(["solve", "-a", "hw.pdf", "-o", "out"])

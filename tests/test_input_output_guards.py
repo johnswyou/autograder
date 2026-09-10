@@ -46,6 +46,44 @@ def test_pipeline_rejects_assignment_inside_output_before_creating_output(
     assert not output.exists()
 
 
+def test_pipeline_leaves_no_binding_when_the_assignment_cannot_be_ingested(
+    tmp_path: Path, tiny_pdf: Path,
+) -> None:
+    """A binding pinned to an unusable file would reject the corrected assignment on the retry."""
+    from autograder.ingest import IngestError
+
+    output = tmp_path / "run"
+    unsupported = tmp_path / "assignment.docx"
+    unsupported.write_bytes(b"not a pdf")
+
+    with pytest.raises(IngestError):
+        Pipeline(RunConfig(api_key=None), unsupported, output)
+    assert not (output / "run_binding.json").exists()
+
+    Pipeline(RunConfig(api_key=None), tiny_pdf, output).close()  # the corrected retry is accepted
+
+
+def test_pipeline_closes_the_assignment_when_the_binding_rejects_the_run(
+    tmp_path: Path, tiny_pdf: Path, monkeypatch,
+) -> None:
+    from autograder.ingest import Document
+
+    output = tmp_path / "run"
+    Pipeline(RunConfig(api_key=None, model="model/a"), tiny_pdf, output).close()
+
+    closed: list[Document] = []
+    original_close = Document.close
+
+    def recording_close(self: Document) -> None:
+        closed.append(self)
+        original_close(self)
+
+    monkeypatch.setattr(Document, "close", recording_close)
+    with pytest.raises(RunBindingError, match="different configuration"):
+        Pipeline(RunConfig(api_key=None, model="model/b"), tiny_pdf, output)
+    assert len(closed) == 1
+
+
 def test_grade_rejects_output_inside_submission_directory_before_discovery(
     tmp_path: Path, tiny_pdf: Path, monkeypatch,
 ) -> None:

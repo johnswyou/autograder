@@ -304,8 +304,19 @@ def generate_rubric(client, cfg: RunConfig, spec: AssignmentSpec, manual: Soluti
 
 
 def _normalize_rubric(rubric: Rubric, points: dict[str, float], only_ids: set[str]) -> None:
-    """Force fixed point totals, rescale criteria that don't sum, drop strays."""
-    rubric.problems = [rp for rp in rubric.problems if rp.problem_id in only_ids]
+    """Force fixed point totals, rescale criteria that don't sum, drop strays and repeats."""
+    kept: list[RubricProblem] = []
+    for rp in rubric.problems:
+        if rp.problem_id not in only_ids:
+            continue
+        if any(rp.problem_id == existing.problem_id for existing in kept):
+            # Grading looks a problem up by id and would take the first entry
+            # anyway; the second must not survive to be rejected later as a
+            # "duplicated teacher entry" the teacher never wrote.
+            log.warning("rubric lists problem %s more than once; keeping the first entry", rp.problem_id)
+            continue
+        kept.append(rp)
+    rubric.problems = kept
     for rp in rubric.problems:
         want = points.get(rp.problem_id, rp.points)
         rp.points = want

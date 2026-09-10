@@ -26,8 +26,9 @@ The command matrix and argument defaults live in
 
 `Pipeline.__init__` performs the first important boundary checks before any
 model client exists. It rejects overlap between the assignment and output,
-hashes the assignment, opens or creates `run_binding.json` through `RunState`,
-and opens the assignment as a page-oriented `Document`. The OpenRouter client is
+opens the assignment as a page-oriented `Document`, then hashes it and opens or
+creates `run_binding.json` through `RunState`, so an assignment that cannot be
+ingested leaves no binding behind. The OpenRouter client is
 lazy: a fully reusable call path never evaluates `Pipeline.client` and therefore
 does not need an API key. Every public `run_*` method closes the assignment in a
 `finally` block. `Pipeline.close()` is also public and idempotent.
@@ -277,8 +278,9 @@ and logs every weight it had to derive. An allocation that cannot resolve fails
 there rather than after the solutions have been generated and billed. It stands
 down when a teacher rubric is supplied, because that rubric is not parsed until
 the rubric stage and may carry the missing weights. For an accepted
-allocation, Python drops stray entries, restores leaf order, fills empty
-criteria, makes criterion IDs unique, proportionally rescales criterion sums,
+allocation, Python drops stray entries, keeps the first of any repeated
+problem entry, restores leaf order, fills empty criteria, makes criterion IDs
+unique, proportionally rescales criterion sums,
 corrects rounding drift, and recomputes the rubric total. A cached rubric is
 revalidated and normalized again before use.
 
@@ -501,8 +503,9 @@ is falsey. The CLI normally copies `OPENROUTER_API_KEY` into that field;
 programmatic callers should do the same when they want cached failures retried.
 
 A cached solution whose verifier notes start with `AGENT_FAILURE` is retried
-with every transitive dependent solution. If that repaired manual changes,
-`_invalidate_solution_dependents` deletes the rubric, per-student grades and
+with every transitive dependent solution. If the repair changes what any
+solution says, its verifier notes and round count set aside so a retry that
+fails again does not count, `_invalidate_solution_dependents` deletes the rubric, per-student grades and
 reports, summary, review queue, and manifest before the repaired manual is
 published. Mappings and transcripts remain because they depend on assignment
 and submission content, not solution correctness.
