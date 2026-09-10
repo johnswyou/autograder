@@ -109,9 +109,6 @@ def _problem_points(spec: AssignmentSpec,
         _validate_point_totals(spec, printed)
         return printed
 
-    if spec.total_points is None and all(node.points is None for node in spec.walk()):
-        return {leaf.id: 1.0 for leaf in leaves}
-
     # Authority runs printed value, then supplied rubric entry, then derivation.
     points: dict[str, float] = {}
     for leaf in leaves:

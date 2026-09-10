@@ -12,11 +12,10 @@ flags) factored out so it can be unit-tested without the API.
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
 
 from .config import RunConfig
 from .ingest import Document
-from .llm import UNTRUSTED_CONTENT_NOTE, AgentTask, UsageMeter, run_agent
+from .llm import UNTRUSTED_CONTENT_NOTE, AgentTask, UsageMeter, agent_pool, run_agent
 from .models import (
     ArtifactFailure,
     AssignmentSpec,
@@ -367,7 +366,7 @@ def grade_student(client, cfg: RunConfig, spec: AssignmentSpec, assignment: Docu
     mapper_flags = len(mapping.integrity_flags)
     grades: dict[str, ProblemGrade] = {}
 
-    with ThreadPoolExecutor(max_workers=max(1, cfg.max_workers)) as ex:
+    with agent_pool(max(1, cfg.max_workers)) as ex:
         futs = {}
         for pid, leaf in leaves.items():
             rp = rubric.for_problem(pid)

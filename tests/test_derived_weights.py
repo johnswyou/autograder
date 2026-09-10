@@ -118,6 +118,20 @@ def test_a_supplied_rubric_outranks_a_derived_split():
     assert _problem_points(spec, rubric) == {"21a": 8.0, "21b": 2.0}
 
 
+def test_a_supplied_rubric_outranks_the_flat_default_when_nothing_is_printed():
+    """A paper that prints no points anywhere still defers to the teacher's weights.
+
+    The flat one-point default is the last resort for a leaf nobody weighted;
+    it must not pre-empt a rubric the teacher wrote precisely to weight them.
+    """
+    spec = _spec([_leaf("1"), _leaf("2")])
+    rubric = Rubric(title="Quiz", problems=[
+        RubricProblem(problem_id="1", points=5.0, criteria=[]),
+        RubricProblem(problem_id="2", points=10.0, criteria=[]),
+    ])
+    assert _problem_points(spec, rubric) == {"1": 5.0, "2": 10.0}
+
+
 def test_a_supplied_rubric_that_contradicts_a_printed_leaf_is_still_an_error():
     spec = _spec([_leaf("1", 3.0), _leaf("2", 7.0)], total=10.0)
     rubric = Rubric(title="Exam", problems=[

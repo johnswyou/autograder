@@ -555,7 +555,9 @@ judgment is a score:
 The current orchestration is sequential across students, so a whole-student
 failure is isolated without nested roster concurrency. Within solution levels,
 provided-solution verification, transcription, and grading, worker pools are
-capped by `max_workers`. `UsageMeter` and `Document` locking make their shared
+capped by `max_workers`. An interrupt cancels the tasks a pool has not started;
+the calls already in flight, at most `max_workers`, run to completion and their
+results are discarded. `UsageMeter` and `Document` locking make their shared
 state thread-safe.
 
 ## Security boundaries

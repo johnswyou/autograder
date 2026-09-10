@@ -23,13 +23,12 @@ from __future__ import annotations
 
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .assignment import spec_digest
 from .config import RunConfig, short
 from .ingest import Document
-from .llm import AGENT_FAILURE, AgentTask, UsageMeter, run_agent
+from .llm import AGENT_FAILURE, AgentTask, UsageMeter, agent_pool, run_agent
 from .models import AssignmentSpec, Issue, ParsedSolutions, Problem, Solution, SolutionsManual, SolverDraft, Verdict
 from .report import markdown_text
 from .tools import Block, ToolKit, image_block, inline_pages, text_block
@@ -329,7 +328,7 @@ def generate_manual(client, cfg: RunConfig, spec: AssignmentSpec, assignment: Do
             continue
         log.info("solving level %d/%d: %s (parallel x%d, fresh agents)",
                  li, len(levels), ", ".join(todo), min(cfg.max_workers, len(todo)))
-        with ThreadPoolExecutor(max_workers=max(1, cfg.max_workers)) as ex:
+        with agent_pool(max(1, cfg.max_workers)) as ex:
             futures = {}
             for pid in todo:
                 leaf = leaves[pid]
@@ -500,7 +499,7 @@ def validate_and_complete_solutions(client, cfg: RunConfig, spec: AssignmentSpec
         to_verify = [pid for pid in leaf_ids if manual.solutions[pid].provenance.startswith("provided")]
         if to_verify:
             log.info("verifying %d provided solution(s) with evaluator agents", len(to_verify))
-        with ThreadPoolExecutor(max_workers=max(1, cfg.max_workers)) as ex:
+        with agent_pool(max(1, cfg.max_workers)) as ex:
             futs = {}
             for pid in to_verify:
                 sol = manual.solutions[pid]

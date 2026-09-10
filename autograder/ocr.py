@@ -11,11 +11,10 @@ silently grading garbled text.
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
 
 from .config import RunConfig
 from .ingest import Document
-from .llm import UNTRUSTED_CONTENT_NOTE, AgentTask, UsageMeter, run_agent
+from .llm import UNTRUSTED_CONTENT_NOTE, AgentTask, UsageMeter, agent_pool, run_agent
 from .models import (
     ArtifactFailure,
     AssignmentSpec,
@@ -145,7 +144,7 @@ def transcribe_all(client, cfg: RunConfig, spec: AssignmentSpec, submission: Doc
     """
     leaves = {leaf.id: leaf for leaf in spec.leaves()}
     out: dict[str, Transcript] = {}
-    with ThreadPoolExecutor(max_workers=max(1, cfg.max_workers)) as ex:
+    with agent_pool(max(1, cfg.max_workers)) as ex:
         futs = {
             pid: ex.submit(transcribe_problem, client, cfg, spec, submission,
                            leaves[pid], loc, meter)

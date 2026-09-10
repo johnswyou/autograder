@@ -415,6 +415,12 @@ class Transcript(TranscriptDraft):
         return self
 
 
+class StudentTranscripts(_Artifact):
+    """On-disk wrapper for one student's transcripts (``transcripts.json``)."""
+
+    transcripts: dict[str, Transcript] = Field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Grading
 # ---------------------------------------------------------------------------

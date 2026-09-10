@@ -6,7 +6,9 @@ import json
 import logging
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generic, Protocol, TypeVar
 
@@ -597,6 +599,25 @@ def run_agent(
             return finished
 
     raise AgentError(f"{tag} exceeded {task.max_turns} agent turns without submitting a result")
+
+
+@contextmanager
+def agent_pool(max_workers: int) -> Iterator[ThreadPoolExecutor]:
+    """A worker pool for agent tasks that abandons its queue when the block is interrupted.
+
+    ``with ThreadPoolExecutor()`` waits for every queued future on exit, even when
+    the block is leaving on KeyboardInterrupt: Ctrl-C during a stage of forty
+    model calls would silently pay for the thirty-six that had not started. Work
+    already in flight cannot be interrupted, so it is still waited for; only the
+    tasks that have not begun are cancelled.
+    """
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        yield executor
+    except BaseException:
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
+    executor.shutdown(wait=True)
 
 
 UNTRUSTED_CONTENT_NOTE = (

@@ -28,7 +28,7 @@ from autograder.models import (
 from autograder.ocr import transcribe_all
 from autograder.solutions import generate_manual, solve_problem, validate_and_complete_solutions
 
-from .conftest import make_stub_client, tool_use
+from .conftest import make_stub_client, tool_use, turn
 
 DRAFT = {"reasoning": "work it out", "final_answer": "42"}
 PASS = {"passed": True, "confidence": 0.9}
@@ -409,6 +409,49 @@ def test_transcribe_all_degrades_per_problem(small_spec, tiny_pdf):
     assert out["2"].quality_notes and "no work to transcribe" in out["2"].quality_notes
 
 
+class _InterruptingClient:
+    """First call raises KeyboardInterrupt in place of a real Ctrl-C; later calls are slow."""
+
+    def __init__(self, n: int) -> None:
+        self.n = n
+        self.calls = 0
+
+    def complete(self, request):
+        import time
+
+        self.calls += 1
+        if self.calls == 1:
+            raise KeyboardInterrupt
+        time.sleep(0.2)
+        return turn(tool_use(SUBMIT_TOOL_NAME, {"text": "x", "confidence": 0.9}))
+
+    def close(self) -> None:
+        pass
+
+
+def test_interrupting_transcription_abandons_queued_model_calls(tiny_pdf):
+    """A Ctrl-C surfacing while transcripts are collected must not leave the
+    pool draining every queued (paid) model call before it propagates."""
+    from autograder.ingest import Document
+    from autograder.models import AssignmentSpec, Problem, ProblemType
+
+    n = 6
+    spec = AssignmentSpec(n_pages=2, problems=[
+        Problem(id=str(i), type=ProblemType.numeric, pages=[1]) for i in range(n)])
+    mapping = StudentMapping(page_count=2, problems={
+        str(i): ProblemLocation(status=WorkStatus.answered,
+                                regions=[Region(page=1, bbox=[0, 0, 100, 50])])
+        for i in range(n)})
+    client = _InterruptingClient(n)
+    doc = Document.from_path(tiny_pdf, "s1")
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            transcribe_all(client, _seq_cfg(), spec, doc, mapping, None)
+    finally:
+        doc.close()
+    assert client.calls < n
+
+
 def test_grade_student_degrades_per_problem(small_spec, tiny_pdf, cfg):
     from autograder.ingest import Document
     from autograder.models import ArtifactFailure, ProcessingStatus
@@ -494,8 +537,8 @@ def test_failed_transcript_skips_grader_agent(small_spec, tiny_pdf):
 def test_stage_student_retries_structured_transcript_and_grade_failures(
     tmp_path: Path, small_spec, tiny_pdf,
 ):
-    from autograder.models import ArtifactFailure, ProcessingStatus
-    from autograder.orchestrator import Pipeline, _Transcripts
+    from autograder.models import ArtifactFailure, ProcessingStatus, StudentTranscripts
+    from autograder.orchestrator import Pipeline
     from autograder.report import save_json
 
     out = tmp_path / "run"
@@ -560,7 +603,7 @@ def test_stage_student_retries_structured_transcript_and_grade_failures(
         for pid in ("1a", "1b", "2")
     })
     save_json(student_dir / "mapping.json", mapping)
-    save_json(student_dir / "transcripts.json", _Transcripts(transcripts=transcripts))
+    save_json(student_dir / "transcripts.json", StudentTranscripts(transcripts=transcripts))
     save_json(student_dir / "grades.json", cached_grade)
 
     pipe._client = make_stub_client([

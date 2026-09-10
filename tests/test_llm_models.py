@@ -787,6 +787,44 @@ def test_make_client_sends_static_openrouter_attribution(monkeypatch):
 # -- models / scheduling ----------------------------------------------------
 
 
+def test_agent_pool_abandons_queued_work_when_its_block_is_interrupted():
+    """Ctrl-C during a stage must not pay for the tasks that had not started.
+
+    ``with ThreadPoolExecutor()`` waits for every queued future on exit, even
+    when the block is leaving on KeyboardInterrupt. The interrupt is raised by
+    the first task here, in place of a real Ctrl-C, so the test is
+    deterministic; each later task sleeps long enough that the pool cannot
+    drain the queue before the block unwinds.
+    """
+    import time
+
+    from autograder.llm import agent_pool
+
+    ran: list[int] = []
+
+    def task(n: int) -> int:
+        ran.append(n)
+        if n == 0:
+            raise KeyboardInterrupt
+        time.sleep(0.2)
+        return n
+
+    with pytest.raises(KeyboardInterrupt), agent_pool(max_workers=1) as pool:
+        for future in [pool.submit(task, n) for n in range(6)]:
+            future.result()
+    assert len(ran) < 6
+
+
+def test_student_transcripts_artifact_rejects_unknown_fields():
+    """transcripts.json is an artifact like the rest: a stray key must not validate silently."""
+    from pydantic import ValidationError
+
+    from autograder.models import StudentTranscripts
+
+    with pytest.raises(ValidationError):
+        StudentTranscripts.model_validate({"transcripts": {}, "results": {}})
+
+
 def test_result_models_reject_enveloped_payload():
     from pydantic import ValidationError
 

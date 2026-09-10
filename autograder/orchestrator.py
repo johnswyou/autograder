@@ -32,7 +32,7 @@ from .models import (
     StudentFailure,
     StudentGrade,
     StudentMapping,
-    Transcript,
+    StudentTranscripts,
 )
 from .ocr import transcribe_all
 from .report import review_queue_md, save_json, save_text, student_report_md, summary_csv, write_manifest
@@ -71,11 +71,6 @@ class PartialGradeFailure(RuntimeError):
             f"grading partially failed: {incomplete} incomplete, "
             f"{len(failures)} failed students"
         )
-
-
-class _Transcripts(BaseModel):
-    """On-disk wrapper for a student's transcripts."""
-    transcripts: dict[str, Transcript] = {}
 
 
 def _files_digest(files: list[Path]) -> str:
@@ -334,12 +329,12 @@ class Pipeline:
             log.info("mapping: %s", mapping_summary(mapping))
 
             tpath = sdir / "transcripts.json"
-            wrapped = self._load_or(tpath, _Transcripts)
+            wrapped = self._load_or(tpath, StudentTranscripts)
             if wrapped is None:
                 log.info("transcribing %s's work (parallel per problem)", student_id)
                 transcripts = transcribe_all(self.client, self.cfg, spec, submission,
                                              mapping, self.meter)
-                save_json(tpath, _Transcripts(transcripts=transcripts))
+                save_json(tpath, StudentTranscripts(transcripts=transcripts))
             else:
                 transcripts = wrapped.transcripts
                 failed = sorted(pid for pid, t in transcripts.items()
@@ -352,7 +347,7 @@ class Pipeline:
                     redo = transcribe_all(self.client, self.cfg, spec, submission,
                                           mapping, self.meter, only_ids=set(failed))
                     transcripts.update(redo)
-                    save_json(tpath, _Transcripts(transcripts=transcripts))
+                    save_json(tpath, StudentTranscripts(transcripts=transcripts))
 
             gpath = sdir / "grades.json"
             grade = self._load_or(gpath, StudentGrade)
